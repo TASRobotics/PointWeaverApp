@@ -1,10 +1,17 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+const call = (channel) => (...args) => ipcRenderer.invoke(channel, ...args);
+
 contextBridge.exposeInMainWorld('electronAPI', {
-  readPaths: (dirPath) => ipcRenderer.invoke('read-paths', dirPath),
-  writePath: (dirPath, name, data) => ipcRenderer.invoke('write-path', dirPath, name, data),
-  renamePath: (dirPath, oldName, newName) => ipcRenderer.invoke('rename-path', dirPath, oldName, newName),
-  deletePath: (dirPath, name) => ipcRenderer.invoke('delete-path', dirPath, name),
-  selectDir: () => ipcRenderer.invoke('select-dir'),
-  selectImage: () => ipcRenderer.invoke('select-image')
+  listPaths: call('paths:list'),
+  writePath: call('paths:write'),
+  renamePath: call('paths:rename'),
+  deletePath: call('paths:delete'),
+  selectDir: call('dialog:selectDir'),
+  readSettings: call('settings:read'),
+  writeSettings: call('settings:write'),
+  pickFieldImage: call('field:pick'),
+  saveFieldImage: call('field:save'),
+  readFieldImage: call('field:read'),
+  clearFieldImage: call('field:clear'),
 });

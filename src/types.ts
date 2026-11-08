@@ -22,6 +22,13 @@ export interface PathPoint {
 export interface PathDefinition {
   points: PathPoint[];
   params: PathParams | null;
+  /** robot resets odometry to the first point when this path starts */
+  resetPose?: boolean | null;
+}
+
+export interface PathFile {
+  name: string;
+  content: PathDefinition;
 }
 
 export interface SimulatedPose {
@@ -29,4 +36,17 @@ export interface SimulatedPose {
   x: number;
   y: number;
   theta: number;
+}
+
+export interface FieldImageConfig {
+  /** file name inside <project>/.pointweaver */
+  file: string | null;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ProjectSettings {
+  fieldImage?: FieldImageConfig | null;
 }

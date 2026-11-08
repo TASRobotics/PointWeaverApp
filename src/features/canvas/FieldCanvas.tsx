@@ -1,610 +1,649 @@
-import React, { useEffect, useCallback, useState, useRef } from 'react';
-import { FIELD_WIDTH, FIELD_HEIGHT, PIXELS_PER_METER, POINT_RADIUS, HEADING_LINE_LENGTH } from '../../constants';
-import type { PathDefinition, PathPoint, SimulatedPose } from '../../types';
+import { useEffect, useRef } from 'react';
+import type { PathDefinition } from '../../types';
+import type { HistoryMode } from '../../hooks/usePathEditor';
+import type { Calibration, FieldImage } from '../../hooks/useFieldImage';
+import type { Playback } from '../../hooks/usePlayback';
+import { FIELD_HEIGHT, FIELD_WIDTH, ROBOT } from '../../constants';
+import { poseAt } from '../../sim/simulate';
+import { resolve } from '../../sim/follower';
 import { distToSegmentSquared } from '../../utils/math';
+import { clampToField, eventPosition, insertPoint, removePoint, round2, updatePoint, wrapDeg } from '../../utils/pathOps';
 
-export interface FieldCanvasProps {
-  projectDir: string | null;
-  currentPathName: string | null;
-  currentPath: PathDefinition;
+interface Props {
+  path: PathDefinition | null;
   selectedIndex: number | null;
-  
-  bgImgObj: HTMLImageElement | null;
-  bgWidth: number;
-  bgHeight: number;
-  bgOffsetX: number;
-  bgOffsetY: number;
-  isEditingBg: boolean;
-  
-  viewOffset: { x: number, y: number };
-  zoomLevel: number;
-  isPanning: boolean;
-  dragMode: 'position' | 'heading' | null;
-  
-  bgDragMode: 'move' | 'tl' | 'tr' | 'bl' | 'br' | null;
-  bgDragStart: { x: number, y: number, bgX: number, bgY: number, bgW: number, bgH: number } | null;
-  
-  playbackState: 'stopped' | 'playing' | 'paused';
-  playbackTimeRef: React.MutableRefObject<number>;
-  canvasRef: React.RefObject<HTMLCanvasElement | null>;
-  
-  setZoomLevel: (z: number) => void;
-  setViewOffset: React.Dispatch<React.SetStateAction<{ x: number, y: number }>>;
-  setIsPanning: (p: boolean) => void;
-  setDragMode: (m: 'position' | 'heading' | null) => void;
-  setBgDragMode: (m: 'move' | 'tl' | 'tr' | 'bl' | 'br' | null) => void;
-  setBgDragStart: (m: any) => void;
-  setSelectedIndex: (i: number | null) => void;
-  
-  updateLocalPath: (newDef: PathDefinition, pushHistory?: boolean, forceHistory?: boolean, actionType?: string | null) => void;
-  pushToHistory: (force?: boolean, actionType?: string | null) => void;
-  
-  setBgOffsetX: (v: number) => void;
-  setBgOffsetY: (v: number) => void;
-  setBgWidth: (v: number) => void;
-  setBgHeight: (v: number) => void;
-  
-  updateSelectedPoint: (field: keyof PathPoint, value: any, forceHistory?: boolean, actionType?: string | null) => void;
-  getInterpolatedPose: (t: number) => SimulatedPose | null;
-  
-  handleDrop: (e: React.DragEvent) => void;
-  handleDragOver: (e: React.DragEvent) => void;
-  
-  drawCanvasRef: React.MutableRefObject<(() => void) | null>;
+  hoverIndex: number | null;
+  onSelect: (i: number | null) => void;
+  onHover: (i: number | null) => void;
+  update: (def: PathDefinition, mode?: HistoryMode) => void;
+  checkpoint: () => void;
+  field: FieldImage;
+  playback: Playback;
+  fitToken: number;
+  theme: Theme;
 }
 
-export const FieldCanvas: React.FC<FieldCanvasProps> = ({
-  projectDir, currentPathName, currentPath, selectedIndex,
-  bgImgObj, bgWidth, bgHeight, bgOffsetX, bgOffsetY, isEditingBg,
-  viewOffset, zoomLevel, isPanning, dragMode, bgDragMode, bgDragStart,
-  playbackState, playbackTimeRef, canvasRef,
-  setZoomLevel, setViewOffset, setIsPanning, setDragMode, setBgDragMode, setBgDragStart, setSelectedIndex,
-  updateLocalPath, pushToHistory, setBgOffsetX, setBgOffsetY, setBgWidth, setBgHeight,
-  updateSelectedPoint, getInterpolatedPose, handleDrop, handleDragOver, drawCanvasRef
-}) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
-  const [hoverPos, setHoverPos] = useState<{x: number, y: number} | null>(null);
+// screen-space sizes (CSS px), constant at any zoom
+const R_POINT = 5.5;
+const R_TRANS = 4;
+const HEADING_LEN = 24;
+const HIT_POINT = 10;
+const HIT_TIP = 8;
+const HIT_HANDLE = 8;
+const FIT_MARGIN = 28;
+const FIT_BOTTOM = 76; // room for the toolbar
 
+export type Theme = 'night' | 'day';
+
+const makePalette = (day: boolean) => {
+  const a = (o: number) => (day ? `rgba(0,0,0,${o})` : `rgba(255,255,255,${o})`);
+  return {
+    bg: day ? '#ffffff' : '#000000',
+    field: day ? '#f7f7f7' : '#080808',
+    fg: day ? '#000000' : '#ffffff',
+    grid: a(day ? 0.07 : 0.045),
+    center: a(0.16),
+    border: a(0.8),
+    path: a(0.92),
+    ghostTrail: a(0.3),
+    ghostFill: a(0.1),
+    ring: a(0.14),
+    ringSelected: a(0.45),
+    halo: a(0.1),
+    haloSelected: a(0.16),
+    label: a(0.45),
+    muted: a(0.6),
+    start: a(0.25),
+    startReset: a(0.7),
+  };
+};
+const PALETTES = { night: makePalette(false), day: makePalette(true) };
+
+type View = { scale: number; ox: number; oy: number };
+type BgMode = 'move' | 'tl' | 'tr' | 'bl' | 'br';
+type Drag =
+  | { kind: 'point'; index: number; mode: 'position' | 'heading'; moved: boolean }
+  | { kind: 'pan'; x: number; y: number; moved: boolean; deselect: boolean }
+  | { kind: 'bg'; mode: BgMode; wx: number; wy: number; cal: Calibration };
+type Hit = { index: number; mode: 'position' | 'heading' } | null;
+
+export function FieldCanvas(props: Props) {
+  const { path, field, fitToken } = props;
+  const C = PALETTES[props.theme];
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const size = useRef({ w: 0, h: 0, dpr: 1 });
+  const view = useRef<View>({ scale: 50, ox: 0, oy: 0 });
+  const fitted = useRef(true);
+  const drag = useRef<Drag | null>(null);
+  const cursor = useRef<{ sx: number; sy: number; wx: number; wy: number } | null>(null);
+  const hoveredEvent = useRef<{ name: string; sx: number; sy: number } | null>(null);
+  const dirty = useRef(true);
+  const latest = useRef(props);
+  latest.current = props;
+
+  // ---- coordinate helpers ----
+  const toScreen = (x: number, y: number): [number, number] => {
+    const v = view.current;
+    return [v.ox + x * v.scale, v.oy - y * v.scale];
+  };
+  const toWorld = (sx: number, sy: number) => {
+    const v = view.current;
+    return { x: (sx - v.ox) / v.scale, y: (v.oy - sy) / v.scale };
+  };
+  const local = (e: { clientX: number; clientY: number }) => {
+    const r = canvasRef.current!.getBoundingClientRect();
+    return { sx: e.clientX - r.left, sy: e.clientY - r.top };
+  };
+
+  const fit = () => {
+    const { w, h } = size.current;
+    if (!w || !h) return;
+    const aw = w - FIT_MARGIN * 2;
+    const ah = h - FIT_MARGIN - FIT_BOTTOM;
+    const scale = Math.max(1, Math.min(aw / FIELD_WIDTH, ah / FIELD_HEIGHT));
+    const ox = FIT_MARGIN + (aw - FIELD_WIDTH * scale) / 2;
+    const top = FIT_MARGIN + (ah - FIELD_HEIGHT * scale) / 2;
+    view.current = { scale, ox, oy: top + FIELD_HEIGHT * scale };
+    fitted.current = true;
+    dirty.current = true;
+  };
+
+  // ---- sizing ----
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    const observer = new ResizeObserver(entries => {
-      for (let entry of entries) {
-        setCanvasSize({
-          width: entry.contentRect.width,
-          height: entry.contentRect.height
-        });
-      }
+    const el = containerRef.current!;
+    const ro = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      const dpr = window.devicePixelRatio || 1;
+      size.current = { w: width, h: height, dpr };
+      const c = canvasRef.current!;
+      c.width = Math.round(width * dpr);
+      c.height = Math.round(height * dpr);
+      if (fitted.current) fit();
+      dirty.current = true;
     });
-    observer.observe(container);
-    return () => observer.disconnect();
+    ro.observe(el);
+    return () => ro.disconnect();
   }, []);
 
-  const drawCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  useEffect(() => {
+    fit();
+  }, [fitToken]);
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // redraw after any prop change
+  useEffect(() => {
+    dirty.current = true;
+  });
 
-    ctx.fillStyle = '#18181b';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.save();
-    ctx.translate(viewOffset.x, canvas.height + viewOffset.y);
-    ctx.scale(zoomLevel, -zoomLevel);
-
-    if (bgImgObj) {
-      ctx.save();
-      ctx.scale(1, -1);
-      const drawX = bgOffsetX * PIXELS_PER_METER;
-      const drawY = -(bgOffsetY + bgHeight) * PIXELS_PER_METER;
-      const drawW = bgWidth * PIXELS_PER_METER;
-      const drawH = bgHeight * PIXELS_PER_METER;
-      ctx.drawImage(bgImgObj, drawX, drawY, drawW, drawH);
-      ctx.restore();
-
-      if (isEditingBg) {
-        ctx.save();
-        ctx.translate(bgOffsetX * PIXELS_PER_METER, bgOffsetY * PIXELS_PER_METER);
-
-        ctx.strokeStyle = '#f59e0b';
-        ctx.lineWidth = 2 / zoomLevel;
-        ctx.setLineDash([5 / zoomLevel, 5 / zoomLevel]);
-        ctx.strokeRect(0, 0, bgWidth * PIXELS_PER_METER, bgHeight * PIXELS_PER_METER);
-        ctx.setLineDash([]);
-
-        const handleSize = 10 / zoomLevel;
-        ctx.fillStyle = '#f59e0b';
-        const corners = [
-          { x: 0, y: 0 },
-          { x: bgWidth * PIXELS_PER_METER, y: 0 },
-          { x: 0, y: bgHeight * PIXELS_PER_METER },
-          { x: bgWidth * PIXELS_PER_METER, y: bgHeight * PIXELS_PER_METER }
-        ];
-        corners.forEach(c => {
-          ctx.fillRect(c.x - handleSize / 2, c.y - handleSize / 2, handleSize, handleSize);
-        });
-        ctx.restore();
-      }
-    }
-
-    const minX = -viewOffset.x / (zoomLevel * PIXELS_PER_METER);
-    const maxX = (canvas.width - viewOffset.x) / (zoomLevel * PIXELS_PER_METER);
-    const minY = viewOffset.y / (zoomLevel * PIXELS_PER_METER);
-    const maxY = (canvas.height + viewOffset.y) / (zoomLevel * PIXELS_PER_METER);
-
-    const startX = Math.floor(minX);
-    const endX = Math.ceil(maxX);
-    const startY = Math.floor(minY);
-    const endY = Math.ceil(maxY);
-
-    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-    ctx.lineWidth = 1;
-    for (let x = startX; x <= endX; x++) {
-      ctx.beginPath(); ctx.moveTo(x * PIXELS_PER_METER, startY * PIXELS_PER_METER); ctx.lineTo(x * PIXELS_PER_METER, endY * PIXELS_PER_METER); ctx.stroke();
-    }
-    for (let y = startY; y <= endY; y++) {
-      ctx.beginPath(); ctx.moveTo(startX * PIXELS_PER_METER, y * PIXELS_PER_METER); ctx.lineTo(endX * PIXELS_PER_METER, y * PIXELS_PER_METER); ctx.stroke();
-    }
-
-    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-    ctx.lineWidth = 2;
-    for (let x = startX; x <= endX; x++) {
-      if (x % 5 !== 0) continue;
-      ctx.beginPath(); ctx.moveTo(x * PIXELS_PER_METER, startY * PIXELS_PER_METER); ctx.lineTo(x * PIXELS_PER_METER, endY * PIXELS_PER_METER); ctx.stroke();
-    }
-    for (let y = startY; y <= endY; y++) {
-      if (y % 5 !== 0) continue;
-      ctx.beginPath(); ctx.moveTo(startX * PIXELS_PER_METER, y * PIXELS_PER_METER); ctx.lineTo(endX * PIXELS_PER_METER, y * PIXELS_PER_METER); ctx.stroke();
-    }
-
-    const points = currentPath.points || [];
-
-    if (points.length > 1) {
-      ctx.shadowColor = 'rgba(14, 165, 233, 0.5)';
-      ctx.shadowBlur = 10;
-      ctx.strokeStyle = '#0ea5e9';
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      for (let i = 0; i < points.length; i++) {
-        const px = points[i].x * PIXELS_PER_METER;
-        const py = points[i].y * PIXELS_PER_METER;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.stroke();
-      ctx.shadowBlur = 0;
-    }
-
-    for (let i = 0; i < points.length; i++) {
-      const p = points[i];
-      const px = p.x * PIXELS_PER_METER;
-      const py = p.y * PIXELS_PER_METER;
-
-      const isSelected = i === selectedIndex;
-
-      const exitRange = p.params?.earlyExitRange ?? currentPath.params?.earlyExitRange;
-      if (exitRange != null) {
-        ctx.fillStyle = isSelected ? 'rgba(16, 185, 129, 0.1)' : 'rgba(63, 63, 70, 0.1)';
-        ctx.strokeStyle = isSelected ? 'rgba(16, 185, 129, 0.3)' : 'rgba(63, 63, 70, 0.3)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(px, py, exitRange * PIXELS_PER_METER, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      }
-
+  // ---- hit testing ----
+  const hitTest = (sx: number, sy: number): Hit => {
+    const pts = latest.current.path?.points ?? [];
+    const sel = latest.current.selectedIndex;
+    const order = pts.map((_, i) => i).reverse();
+    if (sel != null && sel < pts.length) order.unshift(sel);
+    for (const i of order) {
+      const p = pts[i];
+      const [px, py] = toScreen(p.x, p.y);
       if (p.theta != null) {
-        ctx.strokeStyle = isSelected ? '#10b981' : '#a1a1aa';
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(px, py);
-        const rad = p.theta * (Math.PI / 180);
-        const tipX = px + Math.cos(rad) * HEADING_LINE_LENGTH;
-        const tipY = py + Math.sin(rad) * HEADING_LINE_LENGTH;
-        ctx.lineTo(tipX, tipY);
-        ctx.stroke();
-
-        ctx.fillStyle = isSelected ? '#10b981' : '#a1a1aa';
-        ctx.beginPath();
-        ctx.arc(tipX, tipY, POINT_RADIUS * 0.6, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      if (isSelected) {
-        ctx.shadowColor = 'rgba(16, 185, 129, 0.8)';
-        ctx.shadowBlur = 15;
-      } else {
-        ctx.shadowBlur = 0;
-      }
-
-      ctx.fillStyle = isSelected ? '#10b981' : '#3f3f46';
-      ctx.strokeStyle = isSelected ? '#ffffff' : '#a1a1aa';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(px, py, POINT_RADIUS, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.shadowBlur = 0;
-    }
-
-    let hoveredEvents: { label: string, x: number, y: number }[] = [];
-    
-    for (let i = 0; i < points.length; i++) {
-      const p = points[i];
-      if (p.events && p.events.length > 0) {
-        for (const ev of p.events) {
-          const frac = (i === points.length - 1) ? 0 : (ev.fraction ?? 0);
-          let eX = p.x;
-          let eY = p.y;
-          if (i < points.length - 1) {
-            const next = points[i+1];
-            eX = p.x + (next.x - p.x) * frac;
-            eY = p.y + (next.y - p.y) * frac;
-          }
-
-          const cx = eX * PIXELS_PER_METER;
-          const cy = eY * PIXELS_PER_METER;
-
-          ctx.fillStyle = '#eab308';
-          ctx.beginPath();
-          ctx.arc(cx, cy, POINT_RADIUS * 0.7, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.strokeStyle = '#fff';
-          ctx.lineWidth = 2;
-          ctx.stroke();
-
-          if (hoverPos) {
-            const dist = Math.hypot(hoverPos.x - eX, hoverPos.y - eY);
-            if (dist < (POINT_RADIUS * 2) / PIXELS_PER_METER) {
-              hoveredEvents.push({ label: ev.name, x: eX, y: eY });
-            }
-          }
+        const r = (p.theta * Math.PI) / 180;
+        if (Math.hypot(sx - (px + Math.cos(r) * HEADING_LEN), sy - (py - Math.sin(r) * HEADING_LEN)) < HIT_TIP) {
+          return { index: i, mode: 'heading' };
         }
       }
+      if (Math.hypot(sx - px, sy - py) < HIT_POINT) return { index: i, mode: 'position' };
+    }
+    return null;
+  };
+
+  const bgHit = (sx: number, sy: number): BgMode | null => {
+    const { field: f } = latest.current;
+    if (!f.editing || !f.image) return null;
+    const { x, y, width, height } = f.cal;
+    const corners: [BgMode, number, number][] = [
+      ['tl', x, y + height], ['tr', x + width, y + height], ['bl', x, y], ['br', x + width, y],
+    ];
+    for (const [mode, cx, cy] of corners) {
+      const [hx, hy] = toScreen(cx, cy);
+      if (Math.abs(sx - hx) < HIT_HANDLE && Math.abs(sy - hy) < HIT_HANDLE) return mode;
+    }
+    const w = toWorld(sx, sy);
+    if (w.x >= x && w.x <= x + width && w.y >= y && w.y <= y + height) return 'move';
+    return null;
+  };
+
+  // ---- drawing ----
+  const draw = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const { w, h, dpr } = size.current;
+    const { path, selectedIndex, hoverIndex, field, playback } = latest.current;
+    const v = view.current;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, w, h);
+
+    // field box
+    const [fx, fy] = toScreen(0, FIELD_HEIGHT);
+    const fw = FIELD_WIDTH * v.scale;
+    const fh = FIELD_HEIGHT * v.scale;
+    ctx.fillStyle = C.field;
+    ctx.fillRect(fx, fy, fw, fh);
+
+    if (field.image) {
+      const [ix, iy] = toScreen(field.cal.x, field.cal.y + field.cal.height);
+      ctx.drawImage(field.image, ix, iy, field.cal.width * v.scale, field.cal.height * v.scale);
     }
 
-    if (hoveredEvents.length > 0) {
-      ctx.save();
-      ctx.scale(1, -1);
-      const tooltipX = hoveredEvents[0].x * PIXELS_PER_METER;
-      const tooltipY = -hoveredEvents[0].y * PIXELS_PER_METER - (POINT_RADIUS * 1.5);
-      
-      const label = hoveredEvents.map(h => h.label).join(', ');
-
-      ctx.font = '14px "Inter", sans-serif';
-      const textMetrics = ctx.measureText(label);
-      const padding = 6;
-      
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-      ctx.beginPath();
-      ctx.roundRect(tooltipX - textMetrics.width/2 - padding, tooltipY - 20, textMetrics.width + padding*2, 24, 4);
-      ctx.fill();
-      
-      ctx.fillStyle = '#eab308';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(label, tooltipX, tooltipY - 8);
-      ctx.restore();
-    }
-
-    if (playbackState !== 'stopped') {
-      const pose = getInterpolatedPose(playbackTimeRef.current);
-      if (pose && !isNaN(pose.x) && !isNaN(pose.y) && !isNaN(pose.theta)) {
-        ctx.save();
-        ctx.translate(pose.x * PIXELS_PER_METER, pose.y * PIXELS_PER_METER);
-        ctx.rotate(pose.theta * Math.PI / 180);
-
-        const size = 0.8 * PIXELS_PER_METER;
-        ctx.fillStyle = 'rgba(14, 165, 233, 0.4)';
-        ctx.strokeStyle = '#0ea5e9';
-        ctx.lineWidth = 2;
-        ctx.fillRect(-size / 2, -size / 2, size, size);
-        ctx.strokeRect(-size / 2, -size / 2, size, size);
-
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.lineTo(size / 2, 0);
-        ctx.strokeStyle = '#fff';
-        ctx.stroke();
-        ctx.restore();
-      }
-    }
-
-    ctx.restore();
-
-    const scaleWidthMeters = 1.0;
-    const scaleWidthPixels = scaleWidthMeters * PIXELS_PER_METER * zoomLevel;
-    ctx.fillStyle = '#a1a1aa';
-    ctx.strokeStyle = '#a1a1aa';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = C.grid;
     ctx.beginPath();
-    const scaleStartX = 20;
-    const scaleStartY = canvas.height - 20;
-    ctx.moveTo(scaleStartX, scaleStartY - 5);
-    ctx.lineTo(scaleStartX, scaleStartY);
-    ctx.lineTo(scaleStartX + scaleWidthPixels, scaleStartY);
-    ctx.lineTo(scaleStartX + scaleWidthPixels, scaleStartY - 5);
+    for (let x = 1; x < FIELD_WIDTH; x++) {
+      const sx = Math.round(fx + x * v.scale) + 0.5;
+      ctx.moveTo(sx, fy);
+      ctx.lineTo(sx, fy + fh);
+    }
+    for (let y = 1; y < FIELD_HEIGHT; y++) {
+      const sy = Math.round(fy + fh - y * v.scale) + 0.5;
+      ctx.moveTo(fx, sy);
+      ctx.lineTo(fx + fw, sy);
+    }
     ctx.stroke();
 
-    ctx.font = '12px "Inter", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('1 meter', scaleStartX + scaleWidthPixels / 2, scaleStartY - 8);
-  }, [
-    currentPathName, currentPath, selectedIndex, viewOffset, zoomLevel,
-    bgImgObj, bgWidth, bgHeight, bgOffsetX, bgOffsetY, isEditingBg, playbackState, getInterpolatedPose,
-    canvasRef, playbackTimeRef, canvasSize, hoverPos
-  ]);
+    ctx.strokeStyle = C.center;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(fx + fw / 2, fy);
+    ctx.lineTo(fx + fw / 2, fy + fh);
+    ctx.stroke();
+    ctx.setLineDash([]);
 
-  useEffect(() => {
-    drawCanvasRef.current = drawCanvas;
-  }, [drawCanvas, drawCanvasRef]);
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(fx, fy, fw, fh);
 
-  useEffect(() => {
-    drawCanvas();
-  }, [drawCanvas]);
+    if (field.image && field.editing) {
+      const { x, y, width, height } = field.cal;
+      const [ix, iy] = toScreen(x, y + height);
+      ctx.strokeStyle = C.fg;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(ix, iy, width * v.scale, height * v.scale);
+      ctx.setLineDash([]);
+      ctx.fillStyle = C.fg;
+      for (const [cx, cy] of [[x, y], [x + width, y], [x, y + height], [x + width, y + height]]) {
+        const [hx, hy] = toScreen(cx, cy);
+        ctx.fillRect(hx - 4, hy - 4, 8, 8);
+      }
+    }
 
-  const getMousePos = (evt: React.MouseEvent | React.WheelEvent) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
-    const rect = canvas.getBoundingClientRect();
-    const rawX = (evt.clientX - rect.left) * (canvas.width / rect.width);
-    const rawY = (evt.clientY - rect.top) * (canvas.height / rect.height);
+    if (path) drawPath(ctx, path, selectedIndex, hoverIndex, playback);
 
-    const x = (rawX - viewOffset.x) / (zoomLevel * PIXELS_PER_METER);
-    const y = ((canvas.height - rawY) + viewOffset.y) / (zoomLevel * PIXELS_PER_METER);
-    return { x, y };
+    // cursor readout
+    const c = cursor.current;
+    if (c && c.wx >= 0 && c.wx <= FIELD_WIDTH && c.wy >= 0 && c.wy <= FIELD_HEIGHT) {
+      ctx.font = '11px Inter, system-ui, sans-serif';
+      ctx.fillStyle = C.label;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(`x ${c.wx.toFixed(2)}   y ${c.wy.toFixed(2)}`, 14, h - 14);
+    }
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (!currentPathName) return;
-
-    if (e.button === 1) {
-      setIsPanning(true);
-      return;
-    }
-
-    if (isEditingBg && bgImgObj) {
-      const { x, y } = getMousePos(e);
-      const handleRadius = 10 / (PIXELS_PER_METER * zoomLevel);
-      const checkHandle = (hx: number, hy: number) => Math.hypot(x - hx, y - hy) <= handleRadius;
-
-      if (checkHandle(bgOffsetX, bgOffsetY + bgHeight)) {
-        setBgDragMode('tl'); setBgDragStart({ x, y, bgX: bgOffsetX, bgY: bgOffsetY, bgW: bgWidth, bgH: bgHeight }); return;
-      }
-      if (checkHandle(bgOffsetX + bgWidth, bgOffsetY + bgHeight)) {
-        setBgDragMode('tr'); setBgDragStart({ x, y, bgX: bgOffsetX, bgY: bgOffsetY, bgW: bgWidth, bgH: bgHeight }); return;
-      }
-      if (checkHandle(bgOffsetX, bgOffsetY)) {
-        setBgDragMode('bl'); setBgDragStart({ x, y, bgX: bgOffsetX, bgY: bgOffsetY, bgW: bgWidth, bgH: bgHeight }); return;
-      }
-      if (checkHandle(bgOffsetX + bgWidth, bgOffsetY)) {
-        setBgDragMode('br'); setBgDragStart({ x, y, bgX: bgOffsetX, bgY: bgOffsetY, bgW: bgWidth, bgH: bgHeight }); return;
-      }
-
-      if (x >= bgOffsetX && x <= bgOffsetX + bgWidth && y >= bgOffsetY && y <= bgOffsetY + bgHeight) {
-        setBgDragMode('move'); setBgDragStart({ x, y, bgX: bgOffsetX, bgY: bgOffsetY, bgW: bgWidth, bgH: bgHeight }); return;
-      }
-    }
-
-    const { x, y } = getMousePos(e);
-
-    const points = currentPath.points || [];
-    let clickedIndex = -1;
-    let clickedType: 'position' | 'heading' | null = null;
-
-    for (let i = 0; i < points.length; i++) {
-      const p = points[i];
-      if (p.theta != null) {
-        const rad = p.theta * (Math.PI / 180);
-        const tipX = p.x + (Math.cos(rad) * HEADING_LINE_LENGTH) / PIXELS_PER_METER;
-        const tipY = p.y + (Math.sin(rad) * HEADING_LINE_LENGTH) / PIXELS_PER_METER;
-        if (Math.hypot(tipX - x, tipY - y) < (POINT_RADIUS * 3) / PIXELS_PER_METER) {
-          clickedIndex = i;
-          clickedType = 'heading';
-          break;
-        }
-      }
-      if (Math.hypot(p.x - x, p.y - y) < (POINT_RADIUS * 3) / PIXELS_PER_METER) {
-        clickedIndex = i;
-        clickedType = 'position';
-        break;
-      }
-    }
-
-    if (clickedIndex !== -1) {
-      if (e.shiftKey) {
-        const newPoints = [...points];
-        newPoints.splice(clickedIndex, 1);
-        updateLocalPath({ ...currentPath, points: newPoints }, true, true, 'delete');
-        if (selectedIndex === clickedIndex) setSelectedIndex(null);
-        else if (selectedIndex != null && selectedIndex > clickedIndex) setSelectedIndex(selectedIndex - 1);
-      } else {
-        pushToHistory(true, clickedType);
-        setSelectedIndex(clickedIndex);
-        setDragMode(clickedType);
-      }
-    } else if (e.detail === 2) {
-      const newPoints = [...points];
-
-      let insertIndex = newPoints.length;
-      let minDistanceSq = ((POINT_RADIUS * 3) / PIXELS_PER_METER) ** 2;
-
-      for (let i = 0; i < newPoints.length - 1; i++) {
-        const p1 = newPoints[i];
-        const p2 = newPoints[i + 1];
-        const dSq = distToSegmentSquared(x, y, p1.x, p1.y, p2.x, p2.y);
-        if (dSq < minDistanceSq) {
-          minDistanceSq = dSq;
-          insertIndex = i + 1;
-        }
-      }
-
-      newPoints.splice(insertIndex, 0, { x: Number(x.toFixed(2)), y: Number(y.toFixed(2)), theta: 0 });
-      updateLocalPath({ ...currentPath, points: newPoints }, true, true, 'add');
-      setSelectedIndex(insertIndex);
+  /** ghost = the playing robot; otherwise the start footprint (solid-ish when the path resets pose there) */
+  const drawRobot = (ctx: CanvasRenderingContext2D, x: number, y: number, thetaDeg: number, ghost: boolean, reset = false) => {
+    const v = view.current;
+    const [sx, sy] = toScreen(x, y);
+    const L = ROBOT.length * v.scale;
+    const W = ROBOT.width * v.scale;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate((-thetaDeg * Math.PI) / 180);
+    ctx.lineWidth = 1.25;
+    if (ghost) {
+      ctx.fillStyle = C.ghostFill;
+      ctx.strokeStyle = C.fg;
+      ctx.fillRect(-L / 2, -W / 2, L, W);
     } else {
-      setSelectedIndex(null);
+      ctx.strokeStyle = reset ? C.startReset : C.start;
+      if (!reset) ctx.setLineDash([3, 3]);
+    }
+    ctx.strokeRect(-L / 2, -W / 2, L, W);
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(L / 2, 0);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawPath = (
+    ctx: CanvasRenderingContext2D, path: PathDefinition, selectedIndex: number | null, hoverIndex: number | null, playback: Playback,
+  ) => {
+    const pts = path.points;
+    const v = view.current;
+    if (pts.length === 0) return;
+
+    // start footprint
+    drawRobot(ctx, pts[0].x, pts[0].y, pts[0].theta ?? 0, false, !!path.resetPose);
+
+    // where the ghost actually drives (shows early-exit corner cutting)
+    const poses = playback.sim.poses;
+    if (poses.length > 1) {
+      ctx.strokeStyle = C.ghostTrail;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath();
+      poses.forEach((p, i) => {
+        const [sx, sy] = toScreen(p.x, p.y);
+        if (i === 0) ctx.moveTo(sx, sy);
+        else ctx.lineTo(sx, sy);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // path
+    if (pts.length > 1) {
+      ctx.strokeStyle = C.path;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      pts.forEach((p, i) => {
+        const [sx, sy] = toScreen(p.x, p.y);
+        if (i === 0) ctx.moveTo(sx, sy);
+        else ctx.lineTo(sx, sy);
+      });
+      ctx.stroke();
+    }
+
+    // early exit rings (the last point always has to arrive, so none there)
+    for (let i = 0; i < pts.length - 1; i++) {
+      const exit = resolve(path.params, pts[i].params).earlyExitRange;
+      if (!(exit > 0)) continue;
+      const [sx, sy] = toScreen(pts[i].x, pts[i].y);
+      ctx.strokeStyle = i === selectedIndex ? C.ringSelected : C.ring;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      ctx.arc(sx, sy, exit * v.scale, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // events
+    hoveredEvent.current = null;
+    const c = cursor.current;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      for (const ev of p.events ?? []) {
+        const pos = eventPosition(pts, i, i === pts.length - 1 ? 0 : ev.fraction);
+        const [sx, sy] = toScreen(pos.x, pos.y);
+        const hot = c && Math.hypot(c.sx - sx, c.sy - sy) < 9;
+        if (hot) hoveredEvent.current = { name: ev.name, sx, sy };
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(Math.PI / 4);
+        ctx.fillStyle = hot ? C.fg : C.bg;
+        ctx.strokeStyle = C.fg;
+        ctx.lineWidth = 1.25;
+        ctx.fillRect(-3.5, -3.5, 7, 7);
+        ctx.strokeRect(-3.5, -3.5, 7, 7);
+        ctx.restore();
+      }
+    }
+
+    // points (selected drawn last so it's on top)
+    const order = pts.map((_, i) => i).filter(i => i !== selectedIndex);
+    if (selectedIndex != null && selectedIndex < pts.length) order.push(selectedIndex);
+    ctx.font = '10px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    for (const i of order) {
+      const p = pts[i];
+      const [sx, sy] = toScreen(p.x, p.y);
+      const sel = i === selectedIndex;
+      const hov = i === hoverIndex;
+
+      if (sel || hov) {
+        ctx.fillStyle = sel ? C.haloSelected : C.halo;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 11, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (p.theta != null) {
+        const r = (p.theta * Math.PI) / 180;
+        const tx = sx + Math.cos(r) * HEADING_LEN;
+        const ty = sy - Math.sin(r) * HEADING_LEN;
+        ctx.strokeStyle = sel ? C.fg : C.muted;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(tx, ty);
+        ctx.stroke();
+        ctx.fillStyle = sel ? C.fg : C.bg;
+        ctx.beginPath();
+        ctx.arc(tx, ty, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      const radius = p.theta != null ? R_POINT : R_TRANS;
+      ctx.fillStyle = sel ? C.fg : C.bg;
+      ctx.strokeStyle = sel ? C.fg : p.theta != null ? C.fg : C.muted;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      if (playback.sim.stalledAt === i) {
+        ctx.strokeStyle = C.fg;
+        ctx.setLineDash([2, 2]);
+        ctx.beginPath();
+        ctx.arc(sx, sy, 15, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      ctx.fillStyle = sel ? C.fg : C.label;
+      ctx.fillText(String(i), sx + 9, sy + 10);
+    }
+
+    // ghost
+    if (playback.state !== 'stopped') {
+      const pose = poseAt(playback.sim, playback.timeRef.current);
+      if (pose) drawRobot(ctx, pose.x, pose.y, pose.theta, true);
+    }
+
+    // event tooltip
+    const he = hoveredEvent.current;
+    if (he) {
+      ctx.font = '11px Inter, system-ui, sans-serif';
+      const tw = ctx.measureText(he.name).width;
+      const bx = he.sx - tw / 2 - 7;
+      const by = he.sy - 30;
+      ctx.fillStyle = C.fg;
+      ctx.beginPath();
+      ctx.roundRect(bx, by, tw + 14, 20, 5);
+      ctx.fill();
+      ctx.fillStyle = C.bg;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(he.name, he.sx, by + 10.5);
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
-    const pos = getMousePos(e);
-    setHoverPos(pos);
+  const drawRef = useRef(draw);
+  drawRef.current = draw;
 
-    if (isPanning) {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const dx = e.movementX * (canvas.width / rect.width);
-      const dy = e.movementY * (canvas.height / rect.height);
-      setViewOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+  useEffect(() => {
+    let raf = 0;
+    const loop = () => {
+      if (dirty.current || latest.current.playback.state === 'playing') {
+        dirty.current = false;
+        drawRef.current();
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // ---- input ----
+  const setCursor = (c: string) => {
+    if (canvasRef.current) canvasRef.current.style.cursor = c;
+  };
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    const { sx, sy } = local(e);
+    const w = toWorld(sx, sy);
+    const { path, selectedIndex, onSelect, update, field } = latest.current;
+    canvasRef.current!.setPointerCapture(e.pointerId);
+
+    if (e.button === 1 || e.button === 2) {
+      drag.current = { kind: 'pan', x: sx, y: sy, moved: false, deselect: false };
+      return;
+    }
+    if (e.button !== 0) return;
+
+    const bg = bgHit(sx, sy);
+    if (bg) {
+      drag.current = { kind: 'bg', mode: bg, wx: w.x, wy: w.y, cal: { ...field.cal } };
       return;
     }
 
-    if (bgDragMode && bgDragStart) {
-      const { x, y } = getMousePos(e);
-      const dx = x - bgDragStart.x;
-      const dy = y - bgDragStart.y;
-
-      if (bgDragMode === 'move') {
-        setBgOffsetX(Number((bgDragStart.bgX + dx).toFixed(2)));
-        setBgOffsetY(Number((bgDragStart.bgY + dy).toFixed(2)));
-      } else if (bgDragMode === 'tr') {
-        const newW = bgDragStart.bgW + dx;
-        const newH = bgDragStart.bgH + dy;
-        if (newW > 0) setBgWidth(Number(newW.toFixed(2)));
-        if (newH > 0) setBgHeight(Number(newH.toFixed(2)));
-      } else if (bgDragMode === 'tl') {
-        const newW = bgDragStart.bgW - dx;
-        const newH = bgDragStart.bgH + dy;
-        if (newW > 0) {
-          setBgWidth(Number(newW.toFixed(2)));
-          setBgOffsetX(Number((bgDragStart.bgX + dx).toFixed(2)));
-        }
-        if (newH > 0) setBgHeight(Number(newH.toFixed(2)));
-      } else if (bgDragMode === 'bl') {
-        const newW = bgDragStart.bgW - dx;
-        const newH = bgDragStart.bgH - dy;
-        if (newW > 0) {
-          setBgWidth(Number(newW.toFixed(2)));
-          setBgOffsetX(Number((bgDragStart.bgX + dx).toFixed(2)));
-        }
-        if (newH > 0) {
-          setBgHeight(Number(newH.toFixed(2)));
-          setBgOffsetY(Number((bgDragStart.bgY + dy).toFixed(2)));
-        }
-      } else if (bgDragMode === 'br') {
-        const newW = bgDragStart.bgW + dx;
-        const newH = bgDragStart.bgH - dy;
-        if (newW > 0) setBgWidth(Number(newW.toFixed(2)));
-        if (newH > 0) {
-          setBgHeight(Number(newH.toFixed(2)));
-          setBgOffsetY(Number((bgDragStart.bgY + dy).toFixed(2)));
-        }
+    const hit = path ? hitTest(sx, sy) : null;
+    if (path && hit) {
+      if (e.shiftKey) {
+        update(removePoint(path, hit.index));
+        if (selectedIndex === hit.index) onSelect(null);
+        else if (selectedIndex != null && selectedIndex > hit.index) onSelect(selectedIndex - 1);
+        return;
       }
+      onSelect(hit.index);
+      drag.current = { kind: 'point', index: hit.index, mode: hit.mode, moved: false };
+      setCursor('grabbing');
       return;
     }
 
-    if (dragMode && selectedIndex !== null) {
-      const { x, y } = getMousePos(e);
-      const newPoints = [...(currentPath.points || [])];
-      const p = { ...newPoints[selectedIndex] };
-
-      if (dragMode === 'position') {
-        p.x = Number(Math.max(0, Math.min(FIELD_WIDTH, x)).toFixed(2));
-        p.y = Number(Math.max(0, Math.min(FIELD_HEIGHT, y)).toFixed(2));
-      } else if (dragMode === 'heading') {
-        let deg = Math.atan2(y - p.y, x - p.x) * (180 / Math.PI);
-        deg = Math.round(deg);
-        p.theta = deg;
+    if (path && e.detail === 2) {
+      // double click: insert on the nearest segment, otherwise append
+      const pts = path.points;
+      let at = pts.length;
+      let best = (HIT_POINT * 1.5 / view.current.scale) ** 2;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const d = distToSegmentSquared(w.x, w.y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+        if (d < best) {
+          best = d;
+          at = i + 1;
+        }
       }
+      const pos = clampToField(w.x, w.y);
+      update(insertPoint(path, at, { ...pos, theta: 0 }));
+      onSelect(at);
+      drag.current = null;
+      return;
+    }
 
-      newPoints[selectedIndex] = p;
-      updateLocalPath({ ...currentPath, points: newPoints }, false, false, dragMode);
+    drag.current = { kind: 'pan', x: sx, y: sy, moved: false, deselect: true };
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const { sx, sy } = local(e);
+    const w = toWorld(sx, sy);
+    cursor.current = { sx, sy, wx: w.x, wy: w.y };
+    dirty.current = true;
+    const d = drag.current;
+    const { path, update, checkpoint, field, onHover, hoverIndex } = latest.current;
+
+    if (!d) {
+      const hit = hitTest(sx, sy);
+      const idx = hit?.index ?? null;
+      if (idx !== hoverIndex) onHover(idx);
+      const bg = bgHit(sx, sy);
+      setCursor(hit ? 'grab' : bg === 'move' ? 'move' : bg ? 'nwse-resize' : 'default');
+      return;
+    }
+
+    if (d.kind === 'pan') {
+      const dx = sx - d.x;
+      const dy = sy - d.y;
+      if (!d.moved && Math.hypot(dx, dy) < 3) return;
+      d.moved = true;
+      view.current.ox += dx;
+      view.current.oy += dy;
+      d.x = sx;
+      d.y = sy;
+      fitted.current = false;
+      setCursor('grabbing');
+      return;
+    }
+
+    if (d.kind === 'bg') {
+      const dx = w.x - d.wx;
+      const dy = w.y - d.wy;
+      const c0 = d.cal;
+      const patch: Partial<Calibration> = {};
+      if (d.mode === 'move') {
+        patch.x = round2(c0.x + dx);
+        patch.y = round2(c0.y + dy);
+      } else {
+        const left = d.mode === 'tl' || d.mode === 'bl';
+        const top = d.mode === 'tl' || d.mode === 'tr';
+        const nw = left ? c0.width - dx : c0.width + dx;
+        const nh = top ? c0.height + dy : c0.height - dy;
+        if (nw > 0.1) {
+          patch.width = round2(nw);
+          if (left) patch.x = round2(c0.x + dx);
+        }
+        if (nh > 0.1) {
+          patch.height = round2(nh);
+          if (!top) patch.y = round2(c0.y + dy);
+        }
+      }
+      field.updateCal(patch, false);
+      return;
+    }
+
+    if (d.kind === 'point' && path) {
+      const p = path.points[d.index];
+      if (!p) return;
+      if (!d.moved) {
+        checkpoint();
+        d.moved = true;
+      }
+      if (d.mode === 'position') {
+        update(updatePoint(path, d.index, clampToField(w.x, w.y)), false);
+      } else {
+        let deg = (Math.atan2(w.y - p.y, w.x - p.x) * 180) / Math.PI;
+        deg = e.shiftKey ? Math.round(deg / 15) * 15 : Math.round(deg);
+        update(updatePoint(path, d.index, { theta: wrapDeg(deg) }), false);
+      }
     }
   };
 
-  const handleMouseUp = () => {
-    if (bgDragMode) {
-      if (projectDir) {
-        localStorage.setItem(`bgWidth_${projectDir}`, bgWidth.toString());
-        localStorage.setItem(`bgHeight_${projectDir}`, bgHeight.toString());
-        localStorage.setItem(`bgOffsetX_${projectDir}`, bgOffsetX.toString());
-        localStorage.setItem(`bgOffsetY_${projectDir}`, bgOffsetY.toString());
-      }
-      setBgDragMode(null);
-      setBgDragStart(null);
-      return;
-    }
-    setDragMode(null);
-    setIsPanning(false);
+  const onPointerUp = (e: React.PointerEvent) => {
+    const d = drag.current;
+    drag.current = null;
+    canvasRef.current?.releasePointerCapture(e.pointerId);
+    if (!d) return;
+    if (d.kind === 'pan' && !d.moved && d.deselect) latest.current.onSelect(null);
+    if (d.kind === 'bg') latest.current.field.commit();
+    setCursor('default');
   };
 
-  const handleWheel = (e: React.WheelEvent) => {
-    if (selectedIndex !== null) {
-      const p = currentPath.points?.[selectedIndex];
-      if (p && p.theta != null) {
-        const { x, y } = getMousePos(e);
-        if (Math.hypot(p.x - x, p.y - y) < (POINT_RADIUS * 5) / PIXELS_PER_METER) {
-          let delta = e.deltaY > 0 ? -5 : 5;
-          let newTheta = p.theta + delta;
-          if (newTheta > 180) newTheta -= 360;
-          if (newTheta <= -180) newTheta += 360;
-          updateSelectedPoint('theta', newTheta, false, 'heading_scroll');
-          return;
-        }
+  const onPointerLeave = () => {
+    cursor.current = null;
+    hoveredEvent.current = null;
+    if (latest.current.hoverIndex != null && !drag.current) latest.current.onHover(null);
+    dirty.current = true;
+  };
+
+  const onWheel = (e: React.WheelEvent) => {
+    const { sx, sy } = local(e);
+    const { path, selectedIndex, update } = latest.current;
+
+    // scroll over the selected heading point = rotate it
+    const p = selectedIndex != null ? path?.points[selectedIndex] : null;
+    if (path && p && p.theta != null) {
+      const [px, py] = toScreen(p.x, p.y);
+      if (Math.hypot(sx - px, sy - py) < HEADING_LEN + 6) {
+        const delta = e.deltaY > 0 ? -5 : 5;
+        update(updatePoint(path, selectedIndex!, { theta: wrapDeg(p.theta + delta) }), `wheel-${selectedIndex}`);
+        return;
       }
     }
 
-    const zoomSensitivity = 0.001;
-    let newZoom = zoomLevel * Math.exp(-e.deltaY * zoomSensitivity);
-    newZoom = Math.max(0.2, Math.min(newZoom, 5));
-
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const rawX = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const rawY = (e.clientY - rect.top) * (canvas.height / rect.height);
-
-    const fieldPos = getMousePos(e);
-
-    const newOffsetX = rawX - fieldPos.x * PIXELS_PER_METER * newZoom;
-    const newOffsetY = rawY - canvas.height + fieldPos.y * PIXELS_PER_METER * newZoom;
-
-    setZoomLevel(newZoom);
-    setViewOffset({ x: newOffsetX, y: newOffsetY });
+    const v = view.current;
+    const w = toWorld(sx, sy);
+    const minScale = Math.min(size.current.w / FIELD_WIDTH, size.current.h / FIELD_HEIGHT) * 0.4;
+    const scale = Math.max(minScale, Math.min(600, v.scale * Math.exp(-e.deltaY * 0.0015)));
+    view.current = { scale, ox: sx - w.x * scale, oy: sy + w.y * scale };
+    fitted.current = false;
+    dirty.current = true;
   };
 
   return (
-    <div className="canvas-container" ref={containerRef} onDragOver={handleDragOver} onDrop={handleDrop}>
-      {!projectDir ? (
-        <div className="placeholder">
-          <h2>Welcome to PointWeaver</h2>
-          <p>Select your FRC project folder to begin.</p>
-        </div>
-      ) : !currentPathName ? (
-        <div className="placeholder">
-          <h2>Ready to Weave</h2>
-          <p>Create or select a path from the sidebar.</p>
-        </div>
-      ) : (
-        <canvas
-          ref={canvasRef}
-          width={canvasSize.width}
-          height={canvasSize.height}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-          onWheel={handleWheel}
-          style={{ cursor: dragMode || bgDragMode ? 'grabbing' : 'crosshair' }}
-        />
-      )}
+    <div className="canvas-wrap" ref={containerRef}
+      onDragOver={e => e.preventDefault()}
+      onDrop={e => {
+        e.preventDefault();
+        const file = e.dataTransfer.files?.[0];
+        if (file) field.drop(file);
+      }}>
+      <canvas
+        ref={canvasRef}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onPointerLeave={onPointerLeave}
+        onWheel={onWheel}
+        onContextMenu={e => e.preventDefault()}
+      />
+      {!path && <div className="canvas-hint">Select or create a path</div>}
     </div>
   );
-};
+}

@@ -1,237 +1,203 @@
-import React, { useState, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import './App.css';
 
-import type { PathParams, PathPoint } from './types';
-import { FIELD_WIDTH, FIELD_HEIGHT } from './constants';
-import { Sidebar } from './features/sidebar/Sidebar';
-import { FieldCanvas } from './features/canvas/FieldCanvas';
 import { usePathEditor } from './hooks/usePathEditor';
 import { usePlayback } from './hooks/usePlayback';
 import { useFieldImage } from './hooks/useFieldImage';
+import { useTheme } from './hooks/useTheme';
+import { ProjectPanel } from './features/sidebar/ProjectPanel';
+import { FieldCanvas } from './features/canvas/FieldCanvas';
+import { Toolbar } from './features/canvas/Toolbar';
+import { PointList } from './features/inspector/PointList';
+import { Inspector } from './features/inspector/Inspector';
+import { Icon } from './components/Icon';
+import { appendPoint, flipX, flipY, movePoint, removePoint } from './utils/pathOps';
+
+const LAST_PROJECT = 'pw:lastProject';
+
+const readLastProject = () => {
+  if (!window.electronAPI) return null; // plain browser: nothing to load
+  try {
+    return localStorage.getItem(LAST_PROJECT);
+  } catch {
+    return null;
+  }
+};
 
 export default function App() {
-  const [projectDir, setProjectDir] = useState<string | null>(null);
-  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const [projectDir, setProjectDir] = useState<string | null>(readLastProject);
+  const editor = usePathEditor(projectDir);
+  const playback = usePlayback(editor.currentPath);
+  const field = useFieldImage(projectDir);
+  const { theme, toggle: toggleTheme } = useTheme();
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [fitToken, setFitToken] = useState(0);
 
-  const {
-    paths, setPaths,
-    currentPathName, setCurrentPathName,
-    selectedIndex, setSelectedIndex,
-    dirtyPaths, setDirtyPaths,
-    currentPath,
-    updateLocalPath, pushToHistory,
-    undo, redo, saveCurrentPath
-  } = usePathEditor(projectDir);
+  const { currentPathName, currentPath: path, selectedIndex, setSelectedIndex, update } = editor;
+  const hasPath = currentPathName != null;
 
-  const {
-    playbackState,
-    playbackTimeRef,
-    getInterpolatedPose,
-    playPause, stopPlayback,
-    drawCanvasRef
-  } = usePlayback(currentPath);
-
-  const {
-    bgImgObj,
-    bgWidth, setBgWidth,
-    bgHeight, setBgHeight,
-    bgOffsetX, setBgOffsetX,
-    bgOffsetY, setBgOffsetY,
-    isEditingBg, setIsEditingBg,
-    updateBgConfig, selectBgImage,
-    handleDrop, handleDragOver,
-    clearBgImage
-  } = useFieldImage(projectDir);
-
-  const [dragMode, setDragMode] = useState<'position' | 'heading' | null>(null);
-  const [viewOffset, setViewOffset] = useState({ x: 0, y: 0 });
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [isPanning, setIsPanning] = useState(false);
-  const [bgDragMode, setBgDragMode] = useState<'move' | 'tl' | 'tr' | 'bl' | 'br' | null>(null);
-  const [bgDragStart, setBgDragStart] = useState<{ x: number, y: number, bgX: number, bgY: number, bgW: number, bgH: number } | null>(null);
-
+  // new path = fresh ghost
+  const stopPlayback = useRef(playback.stop);
+  stopPlayback.current = playback.stop;
   useEffect(() => {
-    if (projectDir) {
-      loadPaths();
-    }
-  }, [projectDir]);
+    stopPlayback.current();
+    setHoverIndex(null);
+  }, [currentPathName]);
 
-  const loadPaths = async () => {
-    const res = await (window as any).electronAPI.readPaths(projectDir + '\\src\\main\\deploy\\autonomous');
-    if (res.paths) {
-      setPaths(res.paths);
-      if (!currentPathName && res.paths.length > 0) {
-        setCurrentPathName(res.paths[0].name);
-      }
-    }
+  const openProject = async () => {
+    const res = await window.electronAPI?.selectDir();
+    if (!res || res.error !== undefined || !res.dir) return;
+    try {
+      localStorage.setItem(LAST_PROJECT, res.dir);
+    } catch { /* not important */ }
+    setProjectDir(res.dir);
   };
 
-  const selectFolder = async () => {
-    const path = await (window as any).electronAPI.selectDir();
-    if (path) setProjectDir(path);
+  const addPoint = () => {
+    if (!hasPath) return;
+    update(appendPoint(path));
+    setSelectedIndex(path.points.length);
   };
 
-  const updateSelectedPoint = (field: keyof PathPoint, value: any, forceHistory = true, actionType: string | null = null) => {
-    if (selectedIndex === null) return;
-    const newPoints = [...(currentPath.points || [])];
-    newPoints[selectedIndex] = { ...newPoints[selectedIndex], [field]: value };
-    updateLocalPath({ ...currentPath, points: newPoints }, true, forceHistory, actionType || `prop_${field}`);
-  };
-
-  const updateSelectedPointParams = (field: keyof PathParams, value: any, forceHistory = true, actionType: string | null = null) => {
-    if (selectedIndex === null) return;
-    const newPoints = [...(currentPath.points || [])];
-    const p = { ...newPoints[selectedIndex] };
-    const newParams = { ...(p.params || {}), [field]: value };
-    p.params = newParams;
-    newPoints[selectedIndex] = p;
-    updateLocalPath({ ...currentPath, points: newPoints }, true, forceHistory, actionType || `param_${field}`);
-  };
-
-  const updatePathParams = (field: keyof PathParams, value: any, forceHistory = true, actionType: string | null = null) => {
-    const newParams = { ...(currentPath.params || {}), [field]: value };
-    updateLocalPath({ ...currentPath, params: newParams }, true, forceHistory, actionType || `path_param_${field}`);
-  };
-
-  const flipX = () => {
-    if (!currentPathName || !currentPath.points) return;
-    const newPoints = currentPath.points.map(p => ({
-      ...p,
-      x: Number((FIELD_WIDTH - p.x).toFixed(2)),
-      theta: p.theta != null ? ((180 - p.theta + 180) % 360 - 180) : null
-    }));
-    updateLocalPath({ ...currentPath, points: newPoints }, true, true, 'flipX');
-  };
-
-  const flipY = () => {
-    if (!currentPathName || !currentPath.points) return;
-    const newPoints = currentPath.points.map(p => ({
-      ...p,
-      y: Number((FIELD_HEIGHT - p.y).toFixed(2)),
-      theta: p.theta != null ? (p.theta === 0 ? 0 : -p.theta) : null
-    }));
-    updateLocalPath({ ...currentPath, points: newPoints }, true, true, 'flipY');
-  };
-
-  const addWaypoint = () => {
-    if (!currentPathName) return;
-    const newPoints = [...(currentPath.points || [])];
-    const lastPoint = newPoints[newPoints.length - 1] || { x: FIELD_WIDTH / 2, y: FIELD_HEIGHT / 2 };
-    newPoints.push({ x: Number((lastPoint.x + 0.5).toFixed(2)), y: Number((lastPoint.y + 0.5).toFixed(2)), theta: 0 });
-    updateLocalPath({ ...currentPath, points: newPoints });
-    setSelectedIndex(newPoints.length - 1);
-  };
-
-  const deleteSelectedWaypoint = () => {
-    if (selectedIndex === null || !currentPathName) return;
-    const newPoints = [...(currentPath.points || [])];
-    newPoints.splice(selectedIndex, 1);
-    updateLocalPath({ ...currentPath, points: newPoints });
+  const deleteSelected = () => {
+    if (selectedIndex == null) return;
+    update(removePoint(path, selectedIndex));
     setSelectedIndex(null);
   };
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+  const reorder = (from: number, to: number) => {
+    update(movePoint(path, from, to));
+    if (selectedIndex === from) setSelectedIndex(to);
+    else if (selectedIndex != null) {
+      // keep the same point selected after the shuffle
+      const order = path.points.map((_, i) => i);
+      const [m] = order.splice(from, 1);
+      order.splice(to, 0, m);
+      setSelectedIndex(order.indexOf(selectedIndex));
+    }
+  };
 
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
-        if (e.shiftKey) redo();
-        else undo();
+  const stepSelection = (dir: 1 | -1) => {
+    const n = path.points.length;
+    if (!n) return;
+    setSelectedIndex(selectedIndex == null ? (dir > 0 ? 0 : n - 1) : Math.max(0, Math.min(n - 1, selectedIndex + dir)));
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
+      const k = e.key.toLowerCase();
+
+      if (mod && k === 's') {
         e.preventDefault();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
-        redo();
+        editor.save();
+        return;
+      }
+      if (typing) return;
+
+      if (mod && k === 'z') {
         e.preventDefault();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        saveCurrentPath();
+        if (e.shiftKey) editor.redo();
+        else editor.undo();
+      } else if (mod && k === 'y') {
         e.preventDefault();
+        editor.redo();
+      } else if (mod) {
+        return;
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        deleteSelectedWaypoint();
+        deleteSelected();
       } else if (e.key === 'Escape') {
         setSelectedIndex(null);
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        stepSelection(e.key === 'ArrowDown' ? 1 : -1);
+      } else if (e.key === ' ') {
+        e.preventDefault();
+        if (hasPath) playback.playPause();
+      } else if (k === 'f') {
+        setFitToken(t => t + 1);
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   });
 
-  const selectedPoint = selectedIndex !== null && currentPath.points && currentPath.points[selectedIndex] ? currentPath.points[selectedIndex] : null;
+  if (!window.electronAPI) {
+    return <div className="welcome"><p>Run with <code>npm start</code> to use the desktop app.</p></div>;
+  }
+
+  if (!projectDir) {
+    return (
+      <div className="welcome">
+        <Icon name="logo" size={40} />
+        <h1>PointWeaver</h1>
+        <button type="button" className="primary-btn" onClick={openProject}>
+          <Icon name="folder" />
+          Open robot project
+        </button>
+      </div>
+    );
+  }
 
   return (
-    <>
-      <Sidebar
-        projectDir={projectDir}
-        selectFolder={selectFolder}
-        selectBgImage={selectBgImage}
-        bgImgObj={bgImgObj}
-        bgWidth={bgWidth}
-        bgHeight={bgHeight}
-        bgOffsetX={bgOffsetX}
-        bgOffsetY={bgOffsetY}
-        isEditingBg={isEditingBg}
-        setIsEditingBg={setIsEditingBg}
-        updateBgConfig={updateBgConfig}
-        clearBgImage={clearBgImage}
-        paths={paths}
-        currentPathName={currentPathName}
-        setCurrentPathName={setCurrentPathName}
-        setSelectedIndex={setSelectedIndex}
-        dirtyPaths={dirtyPaths}
-        playbackState={playbackState}
-        playPause={playPause}
-        stopPlayback={stopPlayback}
-        addWaypoint={addWaypoint}
-        flipX={flipX}
-        flipY={flipY}
-        saveCurrentPath={saveCurrentPath}
-        setPaths={setPaths}
-        setDirtyPaths={setDirtyPaths}
-        currentPath={currentPath}
-        selectedIndex={selectedIndex}
-        selectedPoint={selectedPoint}
-        updatePathParams={updatePathParams}
-        updateSelectedPoint={updateSelectedPoint}
-        updateSelectedPointParams={updateSelectedPointParams}
-        deleteSelectedWaypoint={deleteSelectedWaypoint}
-      />
-      <FieldCanvas
-        projectDir={projectDir}
-        currentPathName={currentPathName}
-        currentPath={currentPath}
-        selectedIndex={selectedIndex}
-        bgImgObj={bgImgObj}
-        bgWidth={bgWidth}
-        bgHeight={bgHeight}
-        bgOffsetX={bgOffsetX}
-        bgOffsetY={bgOffsetY}
-        isEditingBg={isEditingBg}
-        viewOffset={viewOffset}
-        zoomLevel={zoomLevel}
-        isPanning={isPanning}
-        dragMode={dragMode}
-        bgDragMode={bgDragMode}
-        bgDragStart={bgDragStart}
-        playbackState={playbackState}
-        playbackTimeRef={playbackTimeRef}
-        canvasRef={canvasRef}
-        setZoomLevel={setZoomLevel}
-        setViewOffset={setViewOffset}
-        setIsPanning={setIsPanning}
-        setDragMode={setDragMode}
-        setBgDragMode={setBgDragMode}
-        setBgDragStart={setBgDragStart}
-        setSelectedIndex={setSelectedIndex}
-        updateLocalPath={updateLocalPath}
-        pushToHistory={pushToHistory}
-        setBgOffsetX={setBgOffsetX}
-        setBgOffsetY={setBgOffsetY}
-        setBgWidth={setBgWidth}
-        setBgHeight={setBgHeight}
-        updateSelectedPoint={updateSelectedPoint}
-        getInterpolatedPose={getInterpolatedPose}
-        handleDrop={handleDrop}
-        handleDragOver={handleDragOver}
-        drawCanvasRef={drawCanvasRef}
-      />
-    </>
+    <div className="app">
+      <ProjectPanel projectDir={projectDir} onOpenProject={openProject} editor={editor} field={field}
+        theme={theme} onToggleTheme={toggleTheme} />
+
+      <main className="stage">
+        <FieldCanvas
+          path={hasPath ? path : null}
+          selectedIndex={selectedIndex}
+          hoverIndex={hoverIndex}
+          onSelect={setSelectedIndex}
+          onHover={setHoverIndex}
+          update={update}
+          checkpoint={editor.checkpoint}
+          field={field}
+          playback={playback}
+          fitToken={fitToken}
+          theme={theme}
+        />
+        {hasPath && (
+          <Toolbar
+            playback={playback}
+            dirty={editor.dirtyPaths.has(currentPathName)}
+            onAdd={addPoint}
+            onFlipX={() => update(flipX(path))}
+            onFlipY={() => update(flipY(path))}
+            onFit={() => setFitToken(t => t + 1)}
+            onSave={editor.save}
+          />
+        )}
+      </main>
+
+      <aside className="panel right">
+        {hasPath ? (
+          <>
+            <PointList
+              path={path}
+              selectedIndex={selectedIndex}
+              hoverIndex={hoverIndex}
+              onSelect={setSelectedIndex}
+              onHover={setHoverIndex}
+              onAdd={addPoint}
+              onMove={reorder}
+              stalledAt={playback.sim.stalledAt}
+            />
+            <Inspector
+              path={path}
+              selectedIndex={selectedIndex}
+              update={update}
+              onSelect={setSelectedIndex}
+              duration={playback.sim.duration}
+              stalledAt={playback.sim.stalledAt}
+            />
+          </>
+        ) : (
+          <div className="empty pad">No path selected</div>
+        )}
+      </aside>
+    </div>
   );
 }
