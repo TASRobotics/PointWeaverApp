@@ -1,5 +1,5 @@
 /**
- * 1:1 port of frc.lib.weaver.PathMath (robot project).
+ * 1:1 port of pointweaver.core.PathMath (github.com/TASRobotics/pointweaver-lib).
  * If you change the logic there, change it here too, or the ghost lies.
  */
 import type { PathDefinition, PathParams, PathPoint } from '../types.ts';

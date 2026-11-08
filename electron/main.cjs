@@ -4,8 +4,10 @@ const fs = require('fs');
 
 const isDev = process.env.NODE_ENV === 'development';
 
-// Same folder the robot's PoseReader reads from (deploy/autonomous)
-const PATHS_DIR = ['src', 'main', 'deploy', 'autonomous'];
+// Same folder pointweaver-lib reads from (deploy/pointweaver).
+// Projects from before the library still have deploy/autonomous; use that only if it's the one that exists.
+const PATHS_DIR = ['src', 'main', 'deploy', 'pointweaver'];
+const LEGACY_PATHS_DIR = ['src', 'main', 'deploy', 'autonomous'];
 // Editor-only stuff (field image, calibration). Lives in the robot repo so the team shares it.
 const SETTINGS_DIR = '.pointweaver';
 const NAME_RE = /^[A-Za-z0-9_\- ]+$/;
@@ -13,7 +15,11 @@ const IMAGE_EXT = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/j
 
 let mainWindow;
 
-const pathsDir = (projectDir) => path.join(projectDir, ...PATHS_DIR);
+const pathsDir = (projectDir) => {
+  const current = path.join(projectDir, ...PATHS_DIR);
+  const legacy = path.join(projectDir, ...LEGACY_PATHS_DIR);
+  return !fs.existsSync(current) && fs.existsSync(legacy) ? legacy : current;
+};
 const settingsDir = (projectDir) => path.join(projectDir, SETTINGS_DIR);
 
 function pathFile(projectDir, name) {
