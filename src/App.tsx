@@ -5,6 +5,7 @@ import { usePathEditor } from './hooks/usePathEditor';
 import { usePlayback } from './hooks/usePlayback';
 import { useFieldImage } from './hooks/useFieldImage';
 import { useTheme } from './hooks/useTheme';
+import { useRobotSettings } from './hooks/useRobotSettings';
 import { ProjectPanel } from './features/sidebar/ProjectPanel';
 import { FieldCanvas } from './features/canvas/FieldCanvas';
 import { Toolbar } from './features/canvas/Toolbar';
@@ -27,7 +28,8 @@ const readLastProject = () => {
 export default function App() {
   const [projectDir, setProjectDir] = useState<string | null>(readLastProject);
   const editor = usePathEditor(projectDir);
-  const playback = usePlayback(editor.currentPath);
+  const robotSettings = useRobotSettings(projectDir);
+  const playback = usePlayback(editor.currentPath, robotSettings.robot);
   const field = useFieldImage(projectDir);
   const { theme, toggle: toggleTheme } = useTheme();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
@@ -143,7 +145,7 @@ export default function App() {
   return (
     <div className="app">
       <ProjectPanel projectDir={projectDir} onOpenProject={openProject} editor={editor} field={field}
-        theme={theme} onToggleTheme={toggleTheme} />
+        robot={robotSettings} theme={theme} onToggleTheme={toggleTheme} />
 
       <main className="stage">
         <FieldCanvas
@@ -158,6 +160,7 @@ export default function App() {
           playback={playback}
           fitToken={fitToken}
           theme={theme}
+          robot={robotSettings.robot}
         />
         {hasPath && (
           <Toolbar
@@ -192,6 +195,7 @@ export default function App() {
               onSelect={setSelectedIndex}
               duration={playback.sim.duration}
               stalledAt={playback.sim.stalledAt}
+              robot={robotSettings.robot}
             />
           </>
         ) : (

@@ -1,10 +1,8 @@
 import type { PathDefinition, SimulatedPose } from '../types.ts';
-import { ROBOT, SIM_DT } from '../constants.ts';
-import {
-  EPS, clamp, clampSpeed, desiredHeadingDeg, isPointFinished, prefixDistances, resolveAll, shortestAngleDeg,
-} from './follower.ts';
-
-export type RobotConfig = typeof ROBOT;
+import { SIM_DT } from '../constants.ts';
+import { clamp, shortestAngleDeg } from './follower.ts';
+import { FollowerCore } from './core.ts';
+import { DEFAULT_ROBOT, type ResolvedRobot } from './robot.ts';
 
 export interface SimResult {
   poses: SimulatedPose[];
@@ -20,59 +18,55 @@ const MAX_POINT_TIME = 30; // s, a point with no timeout that takes longer than 
 const wrapDeg = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180;
 
 /**
- * Kinematic sim of Pathfinder, one 20ms robot loop per step:
- * compute the command from the current pose, check if the point is finished, then drive for one loop.
- * Translation is instant (no accel limit, same as the robot), heading follows a P controller like CTRE's.
- * Assumes the robot starts sitting on point 0.
+ * Kinematic sim of the robot following a path, one 20 ms loop per step. Same loop as
+ * FollowerCoreSimTest in pointweaver-lib: ask FollowerCore what to do, then move at that velocity
+ * while the heading follows a P controller like CTRE's. Assumes the robot starts at rest on point 0.
  */
-export function simulatePath(def: PathDefinition, cfg: RobotConfig = ROBOT): SimResult {
+export function simulatePath(def: PathDefinition, robot: ResolvedRobot = DEFAULT_ROBOT): SimResult {
   const pts = def.points ?? [];
   if (pts.length === 0) return { poses: [], duration: 0, pointTimes: [], stalledAt: null };
 
-  const prefix = prefixDistances(pts);
-  const params = resolveAll(def);
+  const core = new FollowerCore(def, {
+    maxSpeed: robot.maxSpeed,
+    maxAcceleration: robot.maxAccel,
+    translationKp: robot.translationPID[0],
+    translationKi: robot.translationPID[1],
+    translationKd: robot.translationPID[2],
+    positionTolerance: robot.positionTolerance,
+    headingToleranceDeg: robot.headingTolerance,
+    period: SIM_DT,
+  });
+  const rotKp = robot.headingPID[0];
+  const maxRate = (robot.maxAngularRate * Math.PI) / 180;
 
   let x = pts[0].x;
   let y = pts[0].y;
   let h = pts[0].theta ?? 0;
-  const startX = x, startY = y, startH = h;
-
   let t = 0;
+  core.start(x, y, h, 0, 0, t);
+
   const poses: SimulatedPose[] = [{ t, x, y, theta: h }];
   const pointTimes: number[] = [];
+  let index = 0;
+  let indexSince = 0;
 
-  for (let k = 0; k < pts.length; k++) {
-    const target = pts[k];
-    const isLast = k === pts.length - 1;
-    let elapsed = 0;
+  for (;;) {
+    const out = core.update(x, y, h, t);
+    const err = (shortestAngleDeg(h, out.headingDeg) * Math.PI) / 180;
+    const omega = clamp(rotKp * err, -maxRate, maxRate);
+    x += out.vx * SIM_DT;
+    y += out.vy * SIM_DT;
+    h = wrapDeg(h + (omega * SIM_DT * 180) / Math.PI);
+    t += SIM_DT;
+    poses.push({ t, x, y, theta: h });
 
-    for (;;) {
-      const dx = target.x - x;
-      const dy = target.y - y;
-      const d = Math.hypot(dx, dy);
-      const speed = clampSpeed(Math.abs(cfg.moveKp * d), params[k], isLast, cfg.maxSpeed);
-      const vx = d > EPS ? (dx / d) * speed : 0;
-      const vy = d > EPS ? (dy / d) * speed : 0;
-
-      const want = desiredHeadingDeg(pts, prefix, params, k, x, y, startX, startY, startH);
-      const finished = isPointFinished(
-        target, params[k], isLast, x, y, h, elapsed, cfg.posTolerance, cfg.headingToleranceDeg,
-      );
-
-      // the command from this loop runs for one period either way
-      const err = (shortestAngleDeg(h, want) * Math.PI) / 180;
-      const omega = clamp(cfg.rotKp * err, -cfg.maxAngularRate, cfg.maxAngularRate);
-      x += vx * SIM_DT;
-      y += vy * SIM_DT;
-      h = wrapDeg(h + (omega * SIM_DT * 180) / Math.PI);
-      t += SIM_DT;
-      elapsed += SIM_DT;
-      poses.push({ t, x, y, theta: h });
-
-      if (finished) break;
-      if (elapsed > MAX_POINT_TIME) return { poses, duration: t, pointTimes, stalledAt: k };
+    if (out.finished || core.targetIndex() !== index) {
+      pointTimes.push(t);
+      index = core.targetIndex();
+      indexSince = t;
     }
-    pointTimes.push(t);
+    if (out.finished) break;
+    if (t - indexSince > MAX_POINT_TIME) return { poses, duration: t, pointTimes, stalledAt: index };
   }
 
   return { poses, duration: t, pointTimes, stalledAt: null };

@@ -5,6 +5,8 @@
 import type { PathDefinition, PathParams, PathPoint } from '../types.ts';
 
 export const EPS = 1e-9;
+/** Braking is planned with this share of the acceleration limit; the rest is left for steering. */
+export const BRAKE_MARGIN = 0.9;
 
 export const smoothstep = (x: number) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
 
@@ -39,6 +41,7 @@ export function prevHeadingIndex(points: PathPoint[], before: number): number {
 export interface ResolvedParams {
   minSpeed: number; // 0 when unset
   maxSpeed: number; // Infinity when unset
+  maxAccel: number; // Infinity when unset
   earlyExitRange: number; // NaN when unset
   timeout: number; // Infinity when unset
   interpolate: boolean; // false when unset
@@ -48,6 +51,7 @@ export function resolve(path: PathParams | null | undefined, point: PathParams |
   return {
     minSpeed: point?.minSpeed ?? path?.minSpeed ?? 0,
     maxSpeed: point?.maxSpeed ?? path?.maxSpeed ?? Infinity,
+    maxAccel: point?.maxAccel ?? path?.maxAccel ?? Infinity,
     earlyExitRange: point?.earlyExitRange ?? path?.earlyExitRange ?? NaN,
     timeout: point?.timeout ?? path?.timeout ?? Infinity,
     interpolate: point?.interpolate ?? path?.interpolate ?? false,
@@ -62,6 +66,24 @@ export function clampSpeed(raw: number, p: ResolvedParams, isLast: boolean, robo
   const min = isLast ? 0 : Math.min(p.minSpeed, max);
   if (raw <= EPS) return 0;
   return clamp(raw, min, max);
+}
+
+/**
+ * Fastest speed toward a point that can still slow to vEnd by the time it gets there:
+ * sqrt(vEnd² + 2·0.9·a·(d − vNow·dt)). The margin and one-loop look-ahead prevent overshoot.
+ */
+export function brakingSpeed(d: number, vNow: number, vEnd: number, accel: number, dt: number): number {
+  const dPlan = Math.max(0, d - vNow * dt);
+  return Math.sqrt(vEnd * vEnd + 2 * BRAKE_MARGIN * accel * dPlan);
+}
+
+/** Move velocity (vx, vy) toward (tx, ty), changing it by at most maxDelta as a vector. */
+export function slew(vx: number, vy: number, tx: number, ty: number, maxDelta: number): [number, number] {
+  const dx = tx - vx;
+  const dy = ty - vy;
+  const m = Math.hypot(dx, dy);
+  if (m <= maxDelta || m <= EPS) return [tx, ty];
+  return [vx + (dx / m) * maxDelta, vy + (dy / m) * maxDelta];
 }
 
 /**

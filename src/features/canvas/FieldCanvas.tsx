@@ -3,7 +3,8 @@ import type { PathDefinition } from '../../types';
 import type { HistoryMode } from '../../hooks/usePathEditor';
 import type { Calibration, FieldImage } from '../../hooks/useFieldImage';
 import type { Playback } from '../../hooks/usePlayback';
-import { FIELD_HEIGHT, FIELD_WIDTH, ROBOT } from '../../constants';
+import { FIELD_HEIGHT, FIELD_WIDTH } from '../../constants';
+import type { ResolvedRobot } from '../../sim/robot';
 import { poseAt } from '../../sim/simulate';
 import { resolve } from '../../sim/follower';
 import { distToSegmentSquared } from '../../utils/math';
@@ -21,6 +22,7 @@ interface Props {
   playback: Playback;
   fitToken: number;
   theme: Theme;
+  robot: ResolvedRobot;
 }
 
 // screen-space sizes (CSS px), constant at any zoom
@@ -255,8 +257,9 @@ export function FieldCanvas(props: Props) {
   const drawRobot = (ctx: CanvasRenderingContext2D, x: number, y: number, thetaDeg: number, ghost: boolean, reset = false) => {
     const v = view.current;
     const [sx, sy] = toScreen(x, y);
-    const L = ROBOT.length * v.scale;
-    const W = ROBOT.width * v.scale;
+    const { robot } = latest.current;
+    const L = robot.robotLength * v.scale;
+    const W = robot.robotWidth * v.scale;
     ctx.save();
     ctx.translate(sx, sy);
     ctx.rotate((-thetaDeg * Math.PI) / 180);

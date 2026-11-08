@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { PathDefinition } from '../types';
 import { simulatePath } from '../sim/simulate';
+import type { ResolvedRobot } from '../sim/robot';
 
 export type PlaybackState = 'stopped' | 'playing' | 'paused';
 
-export function usePlayback(path: PathDefinition) {
-  const sim = useMemo(() => simulatePath(path), [path]);
+export function usePlayback(path: PathDefinition, robot: ResolvedRobot) {
+  const sim = useMemo(() => simulatePath(path, robot), [path, robot]);
   const [state, setState] = useState<PlaybackState>('stopped');
   const timeRef = useRef(0);
   const durationRef = useRef(sim.duration);

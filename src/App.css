@@ -217,6 +217,16 @@ input {
   font-weight: 500;
 }
 
+.head-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--text);
+  vertical-align: middle;
+}
+
 .head-actions {
   display: flex;
   align-items: center;

@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react';
 import type { PathEditor } from '../../hooks/usePathEditor';
 import type { FieldImage } from '../../hooks/useFieldImage';
+import type { RobotSettingsState } from '../../hooks/useRobotSettings';
+import { DEFAULT_ROBOT } from '../../sim/robot';
 import { Icon, IconButton } from '../../components/Icon';
 import { NumberField } from '../../components/Controls';
 import type { Theme } from '../canvas/FieldCanvas';
@@ -10,6 +12,7 @@ interface Props {
   onOpenProject: () => void;
   editor: PathEditor;
   field: FieldImage;
+  robot: RobotSettingsState;
   theme: Theme;
   onToggleTheme: () => void;
 }
@@ -41,8 +44,9 @@ function InlineInput({ initial, placeholder, onSubmit, onDone }: {
   );
 }
 
-export function ProjectPanel({ projectDir, onOpenProject, editor, field, theme, onToggleTheme }: Props) {
+export function ProjectPanel({ projectDir, onOpenProject, editor, field, robot, theme, onToggleTheme }: Props) {
   const [creating, setCreating] = useState(false);
+  const [robotOpen, setRobotOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
 
   return (
@@ -93,6 +97,7 @@ export function ProjectPanel({ projectDir, onOpenProject, editor, field, theme, 
       </div>
 
       <div className="panel-foot">
+        <RobotSection robot={robot} open={robotOpen} onToggle={() => setRobotOpen(!robotOpen)} />
         <div className="section-head">
           <span>Field</span>
           <span className="head-actions">
@@ -115,5 +120,55 @@ export function ProjectPanel({ projectDir, onOpenProject, editor, field, theme, 
         )}
       </div>
     </aside>
+  );
+}
+
+/** robot.json editor: the numbers the robot and the ghost share. Empty field = library default. */
+function RobotSection({ robot, open, onToggle }: { robot: RobotSettingsState; open: boolean; onToggle: () => void }) {
+  const s = robot.settings ?? {};
+  const d = DEFAULT_ROBOT;
+  const num = (key: 'maxSpeed' | 'maxAccel' | 'positionTolerance' | 'headingTolerance' | 'maxAngularRate' | 'robotLength' | 'robotWidth') =>
+    (v: number | null) => {
+      if (v == null || v > 0) robot.update({ [key]: v ?? undefined });
+    };
+  const kp = (key: 'translationPID' | 'headingPID') => (v: number | null) => {
+    const rest = s[key]?.slice(1) ?? [0, 0];
+    robot.update({ [key]: v == null ? undefined : [v, ...rest] });
+  };
+
+  return (
+    <>
+      <div className="section-head">
+        <span>
+          Robot
+          {!robot.settings && <span className="head-dot" title="No robot.json yet: the ghost is using default numbers" />}
+        </span>
+        <span className="head-actions">
+          <IconButton icon="importFile" title="Fill from TunerConstants.java" onClick={robot.importFromTuner} />
+          <IconButton icon="sliders" title="Robot settings (robot.json)" active={open} onClick={onToggle} />
+        </span>
+      </div>
+      {open && (
+        <div className="grid-2 pad">
+          <NumberField label="Max" suffix="m/s" nullable value={s.maxSpeed} placeholder={String(d.maxSpeed)} onChange={num('maxSpeed')} />
+          <NumberField label="Accel" suffix="m/s²" nullable value={s.maxAccel} placeholder={String(d.maxAccel)} onChange={num('maxAccel')} />
+          <NumberField label="Drive P" nullable step={0.5} value={s.translationPID?.[0]} placeholder={String(d.translationPID[0])}
+            title="Final approach gain" onChange={kp('translationPID')} />
+          <NumberField label="Turn P" nullable step={0.5} value={s.headingPID?.[0]} placeholder={String(d.headingPID[0])}
+            title="CTRE heading gain" onChange={kp('headingPID')} />
+          <NumberField label="Pos tol" suffix="m" nullable step={0.01} value={s.positionTolerance} placeholder={String(d.positionTolerance)}
+            onChange={num('positionTolerance')} />
+          <NumberField label="Head tol" suffix="°" nullable value={s.headingTolerance} placeholder={String(d.headingTolerance)}
+            onChange={num('headingTolerance')} />
+          <NumberField label="Spin" suffix="°/s" nullable step={10} value={s.maxAngularRate} placeholder={String(d.maxAngularRate)}
+            title="Fastest the robot can rotate" onChange={num('maxAngularRate')} />
+          <span />
+          <NumberField label="Length" suffix="m" nullable step={0.01} value={s.robotLength} placeholder={String(d.robotLength)}
+            title="Bumper to bumper (ghost only)" onChange={num('robotLength')} />
+          <NumberField label="Width" suffix="m" nullable step={0.01} value={s.robotWidth} placeholder={String(d.robotWidth)}
+            title="Bumper to bumper (ghost only)" onChange={num('robotWidth')} />
+        </div>
+      )}
+    </>
   );
 }

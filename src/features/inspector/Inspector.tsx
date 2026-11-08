@@ -1,6 +1,6 @@
 import type { PathDefinition, PathParams } from '../../types';
 import type { HistoryMode } from '../../hooks/usePathEditor';
-import { ROBOT } from '../../constants';
+import type { ResolvedRobot } from '../../sim/robot';
 import { IconButton } from '../../components/Icon';
 import { NumberField, Toggle } from '../../components/Controls';
 import { removePoint, setEvents, updatePathParams, updatePoint, updatePointParams, wrapDeg } from '../../utils/pathOps';
@@ -12,11 +12,12 @@ interface Props {
   onSelect: (i: number | null) => void;
   duration: number;
   stalledAt: number | null;
+  robot: ResolvedRobot;
 }
 
 const show = (v: number | null | undefined, fallback: string) => (v != null ? String(v) : fallback);
 
-export function Inspector({ path, selectedIndex, update, onSelect, duration, stalledAt }: Props) {
+export function Inspector({ path, selectedIndex, update, onSelect, duration, stalledAt, robot }: Props) {
   const point = selectedIndex != null ? path.points[selectedIndex] : null;
   const pp = path.params ?? {};
 
@@ -32,10 +33,12 @@ export function Inspector({ path, selectedIndex, update, onSelect, duration, sta
               onChange={v => update({ ...path, resetPose: v ? true : undefined })} />
           </div>
           <div className="grid-2">
-            <NumberField label="Max" suffix="m/s" nullable value={pp.maxSpeed} placeholder={String(ROBOT.maxSpeed)}
+            <NumberField label="Max" suffix="m/s" nullable value={pp.maxSpeed} placeholder={String(robot.maxSpeed)}
               onChange={v => setPath({ maxSpeed: v }, 'path-max')} />
             <NumberField label="Min" suffix="m/s" nullable value={pp.minSpeed} placeholder="0"
               onChange={v => setPath({ minSpeed: v }, 'path-min')} />
+            <NumberField label="Accel" suffix="m/s²" nullable value={pp.maxAccel} placeholder={String(robot.maxAccel)}
+              title="Acceleration limit (capped by the robot's)" onChange={v => setPath({ maxAccel: v }, 'path-accel')} />
             <NumberField label="Exit" suffix="m" nullable value={pp.earlyExitRange} placeholder="off" title="Early exit range"
               onChange={v => setPath({ earlyExitRange: v }, 'path-exit')} />
             <NumberField label="Timeout" suffix="s" nullable value={pp.timeout} placeholder="∞" title="Per-point timeout"
@@ -88,7 +91,7 @@ export function Inspector({ path, selectedIndex, update, onSelect, duration, sta
       <div className="section-head sub"><span>Overrides</span></div>
       <div className="pad stack">
         <div className="grid-2">
-          <NumberField label="Max" suffix="m/s" nullable value={ov.maxSpeed} placeholder={show(pp.maxSpeed, String(ROBOT.maxSpeed))}
+          <NumberField label="Max" suffix="m/s" nullable value={ov.maxSpeed} placeholder={show(pp.maxSpeed, String(robot.maxSpeed))}
             onChange={v => setParam({ maxSpeed: v }, 'max')} />
           <NumberField label="Min" suffix="m/s" nullable value={ov.minSpeed} disabled={isLast}
             placeholder={isLast ? '0' : show(pp.minSpeed, '0')} title={isLast ? 'Last point always settles' : undefined}
@@ -98,6 +101,8 @@ export function Inspector({ path, selectedIndex, update, onSelect, duration, sta
             onChange={v => setParam({ earlyExitRange: v }, 'exit')} />
           <NumberField label="Timeout" suffix="s" nullable value={ov.timeout} placeholder={show(pp.timeout, '∞')}
             onChange={v => setParam({ timeout: v }, 'timeout')} />
+          <NumberField label="Accel" suffix="m/s²" nullable value={ov.maxAccel} placeholder={show(pp.maxAccel, String(robot.maxAccel))}
+            title="Acceleration limit toward this point" onChange={v => setParam({ maxAccel: v }, 'accel')} />
         </div>
         {point.theta != null && (
           <div className="row-between">
