@@ -2,6 +2,9 @@ import type { PathDefinition, PathFile, ProjectSettings, RobotSettings } from '.
 
 type Result<T = object> = (T & { error?: undefined }) | { error: string };
 
+/** What the user tried to do when unsaved paths blocked it. */
+export type LeaveAction = 'close' | 'reload';
+
 export interface ElectronAPI {
   listPaths(projectDir: string): Promise<Result<{ paths: PathFile[]; skipped: string[] }>>;
   writePath(projectDir: string, name: string, data: PathDefinition): Promise<Result>;
@@ -17,6 +20,11 @@ export interface ElectronAPI {
   saveFieldImage(projectDir: string, dataUrl: string): Promise<Result<{ file: string }>>;
   readFieldImage(projectDir: string, file: string): Promise<Result<{ dataUrl: string | null }>>;
   clearFieldImage(projectDir: string): Promise<Result>;
+  /** Save / Don't Save / Cancel dialog for these path names. */
+  askUnsaved(names: string[]): Promise<Result<{ choice: 'save' | 'discard' | 'cancel' }>>;
+  /** Finish a close/reload that was blocked by unsaved paths. */
+  leave(action: LeaveAction): Promise<Result>;
+  onUnloadBlocked(cb: (action: LeaveAction) => void): () => void;
 }
 
 declare global {

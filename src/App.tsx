@@ -49,6 +49,7 @@ export default function App() {
   const openProject = async () => {
     const res = await window.electronAPI?.selectDir();
     if (!res || res.error !== undefined || !res.dir) return;
+    if (res.dir !== projectDir && !(await editor.resolveUnsaved())) return;
     try {
       localStorage.setItem(LAST_PROJECT, res.dir);
     } catch { /* not important */ }

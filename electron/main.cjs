@@ -117,6 +117,17 @@ function createWindow() {
     },
   });
 
+  // The page blocks unload while paths are unsaved (usePathEditor). Let the close/reload be cancelled, and tell the
+  // page what was attempted: it asks Save / Don't Save / Cancel (app:askUnsaved), then finishes it (app:leave).
+  let closing = false;
+  mainWindow.on('close', () => {
+    closing = true; // fires before the page's beforeunload
+  });
+  mainWindow.webContents.on('will-prevent-unload', () => {
+    mainWindow.webContents.send('app:unloadBlocked', closing ? 'close' : 'reload');
+    closing = false;
+  });
+
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
   } else {
@@ -125,6 +136,28 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  handle('app:askUnsaved', async (names) => {
+    const list = Array.isArray(names) ? names.map(String) : [];
+    const one = list.length === 1;
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: 'Unsaved changes',
+      message: one ? `Do you want to save the changes to "${list[0]}"?` : `Do you want to save the changes to ${list.length} paths?`,
+      detail: `${one ? '' : `${list.join(', ')}\n\n`}Your changes will be lost if you don't save them.`,
+      buttons: ['Save', "Don't Save", 'Cancel'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    });
+    return { choice: ['save', 'discard', 'cancel'][response] ?? 'cancel' };
+  });
+
+  // finish the close/reload the page blocked, once it has dealt with unsaved paths
+  handle('app:leave', (action) => {
+    if (action === 'close') mainWindow.close();
+    else mainWindow.webContents.reload();
+  });
+
   handle('paths:list', (projectDir) => {
     const dir = pathsDir(projectDir);
     if (!fs.existsSync(dir)) return { paths: [], skipped: [] };

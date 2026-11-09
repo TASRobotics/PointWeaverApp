@@ -31,20 +31,25 @@ export function usePathEditor(projectDir: string | null) {
   const pathsRef = useRef<PathFile[]>([]);
   const histories = useRef(new Map<string, History>());
   const lastAction = useRef<{ path: string; key: string; time: number } | null>(null);
+  const dirtyRef = useRef<Set<string>>(new Set());
 
   const setPaths = (next: PathFile[]) => {
     pathsRef.current = next;
     setPathsState(next);
   };
 
-  const markDirty = (name: string, dirty = true) =>
-    setDirtyPaths(prev => {
-      if (prev.has(name) === dirty) return prev;
-      const next = new Set(prev);
-      if (dirty) next.add(name);
-      else next.delete(name);
-      return next;
-    });
+  const setDirty = (next: Set<string>) => {
+    dirtyRef.current = next;
+    setDirtyPaths(next);
+  };
+
+  const markDirty = (name: string, dirty = true) => {
+    if (dirtyRef.current.has(name) === dirty) return;
+    const next = new Set(dirtyRef.current);
+    if (dirty) next.add(name);
+    else next.delete(name);
+    setDirty(next);
+  };
 
   const history = (name: string) => {
     let h = histories.current.get(name);
@@ -64,7 +69,7 @@ export function usePathEditor(projectDir: string | null) {
     histories.current.clear();
     lastAction.current = null;
     setPaths(res.paths);
-    setDirtyPaths(new Set());
+    setDirty(new Set());
     setSelectedIndex(null);
     setCurrentPathName(res.paths[0]?.name ?? null);
   };
@@ -132,13 +137,40 @@ export function usePathEditor(projectDir: string | null) {
     lastAction.current = null;
   };
 
-  const save = async () => {
-    const name = currentPathName;
-    const def = name && contentOf(name);
-    if (!projectDir || !name || !def) return;
+  /** Write one path to disk. False if it failed (after saying why). */
+  const write = async (name: string) => {
+    const def = contentOf(name);
+    if (!projectDir || !def) return false;
     const res = await api().writePath(projectDir, name, def);
-    if (res.error !== undefined) alert(`Failed to save: ${res.error}`);
-    else markDirty(name, false);
+    if (res.error !== undefined) {
+      alert(`Failed to save ${name}: ${res.error}`);
+      return false;
+    }
+    markDirty(name, false);
+    return true;
+  };
+
+  const save = async () => {
+    if (currentPathName) await write(currentPathName);
+  };
+
+  /** Save every unsaved path. False if any failed. */
+  const saveAll = async () => {
+    for (const name of [...dirtyRef.current]) if (!(await write(name))) return false;
+    return true;
+  };
+
+  /**
+   * Before unsaved paths would be lost (closing, reloading, switching projects): Save / Don't Save / Cancel.
+   * True if it's OK to go ahead.
+   */
+  const resolveUnsaved = async () => {
+    const names = [...dirtyRef.current];
+    if (names.length === 0) return true;
+    const res = await api().askUnsaved(names);
+    if (res.error !== undefined || res.choice === 'cancel') return false;
+    if (res.choice === 'discard') return true;
+    return saveAll();
   };
 
   const validName = (raw: string, except?: string) => {
@@ -182,13 +214,12 @@ export function usePathEditor(projectDir: string | null) {
     histories.current.delete(oldName);
     if (h) histories.current.set(name, h);
     if (currentPathName === oldName) setCurrentPathName(name);
-    setDirtyPaths(prev => {
-      if (!prev.has(oldName)) return prev;
-      const next = new Set(prev);
+    if (dirtyRef.current.has(oldName)) {
+      const next = new Set(dirtyRef.current);
       next.delete(oldName);
       next.add(name);
-      return next;
-    });
+      setDirty(next);
+    }
   };
 
   const remove = async (name: string) => {
@@ -205,6 +236,33 @@ export function usePathEditor(projectDir: string | null) {
     if (currentPathName === name) selectPath(rest[0]?.name ?? null);
   };
 
+  // Closing or reloading with unsaved paths: block it, ask, then finish what the user started (see electron/main.cjs).
+  const resolveRef = useRef(resolveUnsaved);
+  resolveRef.current = resolveUnsaved;
+  useEffect(() => {
+    const electron = window.electronAPI;
+    if (!electron) return;
+    let leaving = false;
+    let asking = false;
+    const block = (e: BeforeUnloadEvent) => {
+      if (dirtyRef.current.size > 0 && !leaving) e.preventDefault();
+    };
+    const off = electron.onUnloadBlocked(async action => {
+      if (asking) return;
+      asking = true;
+      const ok = await resolveRef.current();
+      asking = false;
+      if (!ok) return;
+      leaving = true;
+      electron.leave(action);
+    });
+    window.addEventListener('beforeunload', block);
+    return () => {
+      window.removeEventListener('beforeunload', block);
+      off();
+    };
+  }, []);
+
   return {
     paths,
     currentPathName,
@@ -218,6 +276,7 @@ export function usePathEditor(projectDir: string | null) {
     redo: () => step('redo'),
     selectPath,
     save,
+    resolveUnsaved,
     create,
     rename,
     remove,

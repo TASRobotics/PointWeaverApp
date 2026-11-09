@@ -17,4 +17,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveFieldImage: call('field:save'),
   readFieldImage: call('field:read'),
   clearFieldImage: call('field:clear'),
+  askUnsaved: call('app:askUnsaved'),
+  leave: call('app:leave'),
+  /** Called when a close/reload was blocked because of unsaved paths. Returns an unsubscribe function. */
+  onUnloadBlocked: (cb) => {
+    const listener = (_event, action) => cb(action);
+    ipcRenderer.on('app:unloadBlocked', listener);
+    return () => ipcRenderer.removeListener('app:unloadBlocked', listener);
+  },
 });
