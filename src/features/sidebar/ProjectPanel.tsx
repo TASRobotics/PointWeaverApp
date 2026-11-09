@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { PathEditor } from '../../hooks/usePathEditor';
 import type { FieldImage } from '../../hooks/useFieldImage';
 import type { RobotSettingsState } from '../../hooks/useRobotSettings';
@@ -15,6 +15,8 @@ interface Props {
   robot: RobotSettingsState;
   theme: Theme;
   onToggleTheme: () => void;
+  grid: boolean;
+  onToggleGrid: () => void;
 }
 
 const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
@@ -44,7 +46,7 @@ function InlineInput({ initial, placeholder, onSubmit, onDone }: {
   );
 }
 
-export function ProjectPanel({ projectDir, onOpenProject, editor, field, robot, theme, onToggleTheme }: Props) {
+export function ProjectPanel({ projectDir, onOpenProject, editor, field, robot, theme, onToggleTheme, grid, onToggleGrid }: Props) {
   const [creating, setCreating] = useState(false);
   const [robotOpen, setRobotOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -101,25 +103,86 @@ export function ProjectPanel({ projectDir, onOpenProject, editor, field, robot, 
         <div className="section-head">
           <span>Field</span>
           <span className="head-actions">
-            <IconButton icon="image" title="Set field image (or drop one on the field)" onClick={field.pick} />
-            {field.image && (
+            <IconButton icon="grid" title={grid ? 'Hide grid (G)' : 'Show grid (G)'} active={grid} onClick={onToggleGrid} />
+            <FieldImageMenu field={field} />
+            {field.custom && (
               <>
-                <IconButton icon="move" title="Align image" active={field.editing} onClick={() => field.setEditing(!field.editing)} />
-                <IconButton icon="x" title="Remove image" onClick={field.clear} />
+                <IconButton icon={field.editing ? 'check' : 'move'} title={field.editing ? 'Done aligning' : 'Align image'}
+                  active={field.editing} onClick={() => field.setEditing(!field.editing)} />
+                <IconButton icon="trash" title="Remove image (back to the built-in field)" onClick={field.clear} />
               </>
             )}
           </span>
         </div>
-        {field.image && field.editing && (
-          <div className="grid-2 pad">
-            <NumberField label="W" suffix="m" value={field.cal.width} onChange={v => v != null && v > 0 && field.updateCal({ width: v })} />
-            <NumberField label="H" suffix="m" value={field.cal.height} onChange={v => v != null && v > 0 && field.updateCal({ height: v })} />
-            <NumberField label="X" suffix="m" value={field.cal.x} onChange={v => v != null && field.updateCal({ x: v })} />
-            <NumberField label="Y" suffix="m" value={field.cal.y} onChange={v => v != null && field.updateCal({ y: v })} />
+        {field.image && (
+          <div className="pad stack">
+            <div className="event-slider" title="Background image opacity">
+              <span className="field-label">Opacity</span>
+              <input type="range" min={0} max={1} step={0.05} value={field.opacity} aria-label="Background image opacity"
+                onChange={e => field.setOpacity(Number(e.target.value))} />
+              <span className="num">{Math.round(field.opacity * 100)}%</span>
+            </div>
+            {field.editing && (
+              <div className="grid-2">
+                <NumberField label="W" suffix="m" value={field.cal.width} onChange={v => v != null && v > 0 && field.updateCal({ width: v })} />
+                <NumberField label="H" suffix="m" value={field.cal.height} onChange={v => v != null && v > 0 && field.updateCal({ height: v })} />
+                <NumberField label="X" suffix="m" value={field.cal.x} onChange={v => v != null && field.updateCal({ x: v })} />
+                <NumberField label="Y" suffix="m" value={field.cal.y} onChange={v => v != null && field.updateCal({ y: v })} />
+              </div>
+            )}
           </div>
         )}
       </div>
     </aside>
+  );
+}
+
+/** The image button: use the built-in Rebuilt field, or import your own (dropping one on the field works too). */
+function FieldImageMenu({ field }: { field: FieldImage }) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!anchor.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const choose = (action: () => unknown) => {
+    setOpen(false);
+    action();
+  };
+
+  return (
+    <span className="menu-anchor" ref={anchor}>
+      <IconButton icon="image" title="Field image" active={open} expanded={open} onClick={() => setOpen(!open)} />
+      {open && (
+        <div className="menu" role="menu">
+          <button type="button" role="menuitemradio" aria-checked={!field.custom} className="menu-item"
+            onClick={() => choose(() => field.custom && field.clear())}>
+            <span className="menu-check">{!field.custom && <Icon name="check" size={14} />}</span>
+            Rebuilt
+            <span className="menu-hint">2026</span>
+          </button>
+          <div className="menu-sep" />
+          <button type="button" role="menuitem" className="menu-item" title="Or drop an image on the field"
+            onClick={() => choose(field.pick)}>
+            <span className="menu-check" />
+            Import custom…
+          </button>
+        </div>
+      )}
+    </span>
   );
 }
 

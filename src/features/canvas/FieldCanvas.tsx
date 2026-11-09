@@ -23,6 +23,10 @@ interface Props {
   fitToken: number;
   theme: Theme;
   robot: ResolvedRobot;
+  /** draw the 1 m grid lines (the edge rulers are always drawn) */
+  grid: boolean;
+  /** kept up to date with the current zoom (CSS px per meter), for placing new background images */
+  viewScale: { current: number };
 }
 
 // screen-space sizes (CSS px), constant at any zoom
@@ -47,10 +51,10 @@ const makePalette = (day: boolean) => {
     center: a(0.16),
     border: a(0.8),
     path: a(0.92),
-    ghostTrail: a(0.3),
+    ghostTrail: a(0.5),
     ghostFill: a(0.1),
-    ring: a(0.14),
-    ringSelected: a(0.45),
+    ring: a(0.3),
+    ringSelected: a(0.65),
     halo: a(0.1),
     haloSelected: a(0.16),
     label: a(0.45),
@@ -179,8 +183,9 @@ export function FieldCanvas(props: Props) {
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
     const { w, h, dpr } = size.current;
-    const { path, selectedIndex, hoverIndex, field, playback } = latest.current;
+    const { path, selectedIndex, hoverIndex, field, playback, grid, viewScale } = latest.current;
     const v = view.current;
+    viewScale.current = v.scale;
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = C.bg;
@@ -195,23 +200,27 @@ export function FieldCanvas(props: Props) {
 
     if (field.image) {
       const [ix, iy] = toScreen(field.cal.x, field.cal.y + field.cal.height);
+      ctx.globalAlpha = field.opacity;
       ctx.drawImage(field.image, ix, iy, field.cal.width * v.scale, field.cal.height * v.scale);
+      ctx.globalAlpha = 1;
     }
 
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = C.grid;
-    ctx.beginPath();
-    for (let x = 1; x < FIELD_WIDTH; x++) {
-      const sx = Math.round(fx + x * v.scale) + 0.5;
-      ctx.moveTo(sx, fy);
-      ctx.lineTo(sx, fy + fh);
+    if (grid) {
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = C.grid;
+      ctx.beginPath();
+      for (let x = 1; x < FIELD_WIDTH; x++) {
+        const sx = Math.round(fx + x * v.scale) + 0.5;
+        ctx.moveTo(sx, fy);
+        ctx.lineTo(sx, fy + fh);
+      }
+      for (let y = 1; y < FIELD_HEIGHT; y++) {
+        const sy = Math.round(fy + fh - y * v.scale) + 0.5;
+        ctx.moveTo(fx, sy);
+        ctx.lineTo(fx + fw, sy);
+      }
+      ctx.stroke();
     }
-    for (let y = 1; y < FIELD_HEIGHT; y++) {
-      const sy = Math.round(fy + fh - y * v.scale) + 0.5;
-      ctx.moveTo(fx, sy);
-      ctx.lineTo(fx + fw, sy);
-    }
-    ctx.stroke();
 
     ctx.strokeStyle = C.center;
     ctx.setLineDash([4, 4]);
@@ -224,6 +233,8 @@ export function FieldCanvas(props: Props) {
     ctx.strokeStyle = C.border;
     ctx.lineWidth = 1.5;
     ctx.strokeRect(fx, fy, fw, fh);
+
+    drawRulers(ctx, fx, fy, fh);
 
     if (field.image && field.editing) {
       const { x, y, width, height } = field.cal;
@@ -251,6 +262,39 @@ export function FieldCanvas(props: Props) {
       ctx.textBaseline = 'alphabetic';
       ctx.fillText(`x ${c.wx.toFixed(2)}   y ${c.wy.toFixed(2)}`, 14, h - 14);
     }
+  };
+
+  /** Meter ticks and labels just outside the bottom (x) and left (y) edges of the field. */
+  const drawRulers = (ctx: CanvasRenderingContext2D, fx: number, fy: number, fh: number) => {
+    const scale = view.current.scale;
+    const every = scale >= 24 ? 1 : 2; // label spacing (m), so the numbers never collide
+    const bottom = fy + fh;
+    const xs = Array.from({ length: Math.floor(FIELD_WIDTH) + 1 }, (_, i) => i);
+    const ys = Array.from({ length: Math.floor(FIELD_HEIGHT) + 1 }, (_, i) => i);
+
+    ctx.strokeStyle = C.label;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const x of xs) {
+      const sx = Math.round(fx + x * scale) + 0.5;
+      ctx.moveTo(sx, bottom);
+      ctx.lineTo(sx, bottom + (x % every === 0 ? 6 : 3));
+    }
+    for (const y of ys) {
+      const sy = Math.round(bottom - y * scale) + 0.5;
+      ctx.moveTo(fx, sy);
+      ctx.lineTo(fx - (y % every === 0 ? 6 : 3), sy);
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = C.label;
+    ctx.font = '10px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (const x of xs) if (x % every === 0) ctx.fillText(String(x), Math.round(fx + x * scale), bottom + 8);
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (const y of ys) if (y % every === 0) ctx.fillText(String(y), fx - 9, Math.round(bottom - y * scale));
   };
 
   /** ghost = the playing robot; otherwise the start footprint (solid-ish when the path resets pose there) */
@@ -295,8 +339,8 @@ export function FieldCanvas(props: Props) {
     const poses = playback.sim.poses;
     if (poses.length > 1) {
       ctx.strokeStyle = C.ghostTrail;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([2, 3]);
+      ctx.lineWidth = 1.75;
+      ctx.setLineDash([4, 3]);
       ctx.beginPath();
       poses.forEach((p, i) => {
         const [sx, sy] = toScreen(p.x, p.y);
@@ -326,8 +370,8 @@ export function FieldCanvas(props: Props) {
       if (!(exit > 0)) continue;
       const [sx, sy] = toScreen(pts[i].x, pts[i].y);
       ctx.strokeStyle = i === selectedIndex ? C.ringSelected : C.ring;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 4]);
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
       ctx.beginPath();
       ctx.arc(sx, sy, exit * v.scale, 0, Math.PI * 2);
       ctx.stroke();

@@ -270,6 +270,75 @@ input {
   cursor: default;
 }
 
+/* ---------- popup menu ---------- */
+
+.menu-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px); /* opens upward: the Field section sits at the bottom of the panel */
+  z-index: 20;
+  min-width: 180px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--raised);
+  box-shadow: 0 10px 40px var(--shadow);
+  /* undo the section head's small caps */
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px 7px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+
+.menu-check {
+  width: 14px;
+  height: 14px;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+}
+
+.menu-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
+}
+
 .primary-btn {
   display: inline-flex;
   align-items: center;
@@ -589,6 +658,7 @@ input {
 
 input[type='range'] {
   flex: 1;
+  min-width: 0; /* range inputs default to ~130px wide; let them shrink in narrow panels */
   height: 18px;
   margin: 0;
   background: transparent;
@@ -640,6 +710,7 @@ input[type='range']::-webkit-slider-thumb {
 }
 
 .event-slider .num {
+  flex: none;
   width: 34px;
   text-align: right;
   font-size: 11px;

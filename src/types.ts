@@ -46,6 +46,8 @@ export interface FieldImageConfig {
   y: number;
   width: number;
   height: number;
+  /** 0..1, default 1 */
+  opacity?: number;
 }
 
 export interface ProjectSettings {

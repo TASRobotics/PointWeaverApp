@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FieldImageConfig, ProjectSettings } from '../types';
 import { FIELD_HEIGHT, FIELD_WIDTH } from '../constants';
+import { round2 } from '../utils/pathOps';
+// 2026 REBUILT, cropped to the carpet and turned blue-side-left, so it fills the field box exactly
+import builtinField from '../assets/fields/rebuilt-2026.jpg';
 
 export type Calibration = Pick<FieldImageConfig, 'x' | 'y' | 'width' | 'height'>;
 
+/** The whole field. The built-in image always sits here. */
 const DEFAULT_CAL: Calibration = { x: 0, y: 0, width: FIELD_WIDTH, height: FIELD_HEIGHT };
 const api = () => window.electronAPI!;
 
@@ -43,7 +47,12 @@ function takeLegacy(projectDir: string) {
   }
 }
 
-export function useFieldImage(projectDir: string | null) {
+/**
+ * The field background for a project: the project's own image (stored in <project>/.pointweaver), or the
+ * built-in 2026 REBUILT field when it hasn't set one.
+ * @param pxPerMeter the canvas's current zoom (CSS px per meter), so a new image can be placed at its real size
+ */
+export function useFieldImage(projectDir: string | null, pxPerMeter: () => number) {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [file, setFile] = useState<string | null>(null);
   const [cal, setCalState] = useState<Calibration>(DEFAULT_CAL);
@@ -52,6 +61,9 @@ export function useFieldImage(projectDir: string | null) {
     calRef.current = c;
     setCalState(c);
   };
+  const [opacity, setOpacityState] = useState(1);
+  const opacityRef = useRef(1);
+  const opacityTimer = useRef<number | undefined>(undefined);
   const [editing, setEditing] = useState(false);
   const settingsRef = useRef<ProjectSettings>({});
 
@@ -62,11 +74,35 @@ export function useFieldImage(projectDir: string | null) {
     if (res.error !== undefined) console.error('settings write failed', res.error);
   };
 
+  /** Save the image's file (null = built-in), calibration and opacity. */
+  const save = (f: string | null, c: Calibration = calRef.current) =>
+    persist({ file: f, ...c, opacity: opacityRef.current });
+
+  /** Show the built-in field, filling the field box. */
+  const showBuiltin = async (isCancelled = () => false) => {
+    const img = await loadImage(builtinField);
+    if (isCancelled()) return;
+    setImage(img);
+    setFile(null);
+    setCal(DEFAULT_CAL);
+  };
+
+  /** A new image at its real size: 1 image pixel = 1 CSS pixel at the current zoom, centered on the field. */
+  const actualSize = (img: HTMLImageElement): Calibration => {
+    const scale = pxPerMeter();
+    const width = Math.max(0.1, round2(img.naturalWidth / scale));
+    const height = Math.max(0.1, round2(img.naturalHeight / scale));
+    return { x: round2((FIELD_WIDTH - width) / 2), y: round2((FIELD_HEIGHT - height) / 2), width, height };
+  };
+
   useEffect(() => {
     let cancelled = false;
     setImage(null);
     setFile(null);
     setCal(DEFAULT_CAL);
+    opacityRef.current = 1;
+    setOpacityState(1);
+    window.clearTimeout(opacityTimer.current);
     setEditing(false);
     settingsRef.current = {};
     if (!projectDir) return;
@@ -88,13 +124,23 @@ export function useFieldImage(projectDir: string | null) {
           }
         }
       }
-      if (!cfg?.file || cancelled) return;
+      if (cancelled) return;
+      opacityRef.current = cfg?.opacity ?? 1;
+      setOpacityState(opacityRef.current);
 
-      const img = await api().readFieldImage(projectDir, cfg.file);
-      if (cancelled || img.error !== undefined || !img.dataUrl) return;
-      setImage(await loadImage(img.dataUrl));
-      setFile(cfg.file);
-      setCal({ x: cfg.x, y: cfg.y, width: cfg.width, height: cfg.height });
+      if (cfg?.file) {
+        const img = await api().readFieldImage(projectDir, cfg.file);
+        if (cancelled) return;
+        if (img.error === undefined && img.dataUrl) {
+          const loaded = await loadImage(img.dataUrl);
+          if (cancelled) return;
+          setImage(loaded);
+          setFile(cfg.file);
+          setCal({ x: cfg.x, y: cfg.y, width: cfg.width, height: cfg.height });
+          return;
+        }
+      }
+      await showBuiltin(() => cancelled);
     })();
 
     return () => {
@@ -103,14 +149,33 @@ export function useFieldImage(projectDir: string | null) {
   }, [projectDir]);
 
   /** Change calibration. persist=false while dragging, then commit() on release. */
-  const updateCal = (patch: Partial<Calibration>, save = true) => {
+  const updateCal = (patch: Partial<Calibration>, persistNow = true) => {
     const next = { ...calRef.current, ...patch };
     setCal(next);
-    if (save && file) persist({ file, ...next });
+    if (persistNow && file) save(file, next);
   };
 
   const commit = () => {
-    if (file) persist({ file, ...calRef.current });
+    if (file) save(file);
+  };
+
+  /** Background opacity, 0..1 (0 hides it). Saved shortly after the slider stops moving. */
+  const setOpacity = (v: number) => {
+    opacityRef.current = Math.max(0, Math.min(1, v));
+    setOpacityState(opacityRef.current);
+    window.clearTimeout(opacityTimer.current);
+    opacityTimer.current = window.setTimeout(() => save(file), 250);
+  };
+
+  /** Show a newly imported image at its real size and switch to align mode to fit it. */
+  const place = async (dataUrl: string, savedFile: string) => {
+    const img = await loadImage(dataUrl);
+    const c = actualSize(img);
+    setImage(img);
+    setFile(savedFile);
+    setCal(c);
+    setEditing(true);
+    save(savedFile, c);
   };
 
   const pick = async () => {
@@ -118,9 +183,7 @@ export function useFieldImage(projectDir: string | null) {
     const res = await api().pickFieldImage(projectDir);
     if (res.error !== undefined) return alert(`Couldn't load image: ${res.error}`);
     if (!res.file || !res.dataUrl) return;
-    setImage(await loadImage(res.dataUrl));
-    setFile(res.file);
-    persist({ file: res.file, ...calRef.current });
+    await place(res.dataUrl, res.file);
   };
 
   const drop = async (blob: File) => {
@@ -128,22 +191,24 @@ export function useFieldImage(projectDir: string | null) {
     const dataUrl = await readAsDataUrl(blob);
     const res = await api().saveFieldImage(projectDir, dataUrl);
     if (res.error !== undefined) return alert(`Couldn't save image: ${res.error}`);
-    setImage(await loadImage(dataUrl));
-    setFile(res.file);
-    setEditing(true);
-    persist({ file: res.file, ...calRef.current });
+    await place(dataUrl, res.file);
   };
 
+  /** Drop the project's own image and go back to the built-in field. */
   const clear = async () => {
     if (!projectDir) return;
     await api().clearFieldImage(projectDir);
-    setImage(null);
-    setFile(null);
     setEditing(false);
-    persist(null);
+    await showBuiltin();
+    save(null, DEFAULT_CAL);
   };
 
-  return { image, cal, editing, setEditing, updateCal, commit, pick, drop, clear };
+  return {
+    image,
+    /** true when the project uses its own image (alignable, removable) rather than the built-in field */
+    custom: file != null,
+    cal, opacity, editing, setEditing, updateCal, commit, setOpacity, pick, drop, clear,
+  };
 }
 
 export type FieldImage = ReturnType<typeof useFieldImage>;

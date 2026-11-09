@@ -15,6 +15,8 @@ const ICONS: Record<string, ReactNode> = {
   move: <path d="M8 2v12M2 8h12M8 2L6.5 3.5M8 2l1.5 1.5M8 14l-1.5-1.5M8 14l1.5-1.5M2 8l1.5-1.5M2 8l1.5 1.5M14 8l-1.5-1.5M14 8l-1.5 1.5" />,
   pencil: <path d="M10.5 2.5l3 3L6 13H3v-3z" />,
   trash: <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" />,
+  check: <path d="M3 8.5l3.2 3.2L13 4.8" />,
+  grid: <><rect x="2.5" y="2.5" width="11" height="11" rx="1" /><path d="M6.2 2.5v11M9.8 2.5v11M2.5 6.2h11M2.5 9.8h11" /></>,
   reset: <><path d="M3.5 8a4.5 4.5 0 1 0 1.3-3.2" /><path d="M3.5 2.5v2.5H6" /></>,
   warn: <><path d="M8 2.5l6 10.5H2z" /><path d="M8 6.5v3M8 11.3v.2" /></>,
   grip: <><circle cx="6" cy="4" r=".9" fill="currentColor" stroke="none" /><circle cx="10" cy="4" r=".9" fill="currentColor" stroke="none" /><circle cx="6" cy="8" r=".9" fill="currentColor" stroke="none" /><circle cx="10" cy="8" r=".9" fill="currentColor" stroke="none" /><circle cx="6" cy="12" r=".9" fill="currentColor" stroke="none" /><circle cx="10" cy="12" r=".9" fill="currentColor" stroke="none" /></>,
@@ -52,12 +54,15 @@ interface IconButtonProps {
   disabled?: boolean;
   active?: boolean;
   className?: string;
+  /** set when the button opens a menu: whether it's open */
+  expanded?: boolean;
 }
 
-export function IconButton({ icon, title, onClick, disabled, active, className = '' }: IconButtonProps) {
+export function IconButton({ icon, title, onClick, disabled, active, className = '', expanded }: IconButtonProps) {
   return (
     <button type="button" className={`icon-btn ${active ? 'active' : ''} ${className}`} title={title} aria-label={title}
-      onClick={onClick} disabled={disabled}>
+      onClick={onClick} disabled={disabled}
+      aria-haspopup={expanded !== undefined ? 'menu' : undefined} aria-expanded={expanded}>
       <Icon name={icon} />
     </button>
   );

@@ -25,15 +25,34 @@ const readLastProject = () => {
   }
 };
 
+const GRID = 'pw:grid';
+
+const readGrid = () => {
+  try {
+    return localStorage.getItem(GRID) !== 'off';
+  } catch {
+    return true;
+  }
+};
+
 export default function App() {
   const [projectDir, setProjectDir] = useState<string | null>(readLastProject);
   const editor = usePathEditor(projectDir);
   const robotSettings = useRobotSettings(projectDir);
   const playback = usePlayback(editor.currentPath, robotSettings.robot);
-  const field = useFieldImage(projectDir);
+  const viewScale = useRef(50); // canvas zoom (px per m), kept current by FieldCanvas
+  const field = useFieldImage(projectDir, () => viewScale.current);
   const { theme, toggle: toggleTheme } = useTheme();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [fitToken, setFitToken] = useState(0);
+  const [grid, setGrid] = useState(readGrid);
+  const toggleGrid = () => setGrid(g => !g);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(GRID, grid ? 'on' : 'off');
+    } catch { /* not important */ }
+  }, [grid]);
 
   const { currentPathName, currentPath: path, selectedIndex, setSelectedIndex, update } = editor;
   const hasPath = currentPathName != null;
@@ -120,6 +139,8 @@ export default function App() {
         if (hasPath) playback.playPause();
       } else if (k === 'f') {
         setFitToken(t => t + 1);
+      } else if (k === 'g') {
+        toggleGrid();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -146,7 +167,7 @@ export default function App() {
   return (
     <div className="app">
       <ProjectPanel projectDir={projectDir} onOpenProject={openProject} editor={editor} field={field}
-        robot={robotSettings} theme={theme} onToggleTheme={toggleTheme} />
+        robot={robotSettings} theme={theme} onToggleTheme={toggleTheme} grid={grid} onToggleGrid={toggleGrid} />
 
       <main className="stage">
         <FieldCanvas
@@ -162,6 +183,8 @@ export default function App() {
           fitToken={fitToken}
           theme={theme}
           robot={robotSettings.robot}
+          grid={grid}
+          viewScale={viewScale}
         />
         {hasPath && (
           <Toolbar
