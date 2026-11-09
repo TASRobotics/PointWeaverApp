@@ -44,7 +44,7 @@ export interface ResolvedParams {
   maxAccel: number; // Infinity when unset
   earlyExitRange: number; // NaN when unset
   timeout: number; // Infinity when unset
-  interpolate: boolean; // false when unset
+  interpolate: boolean; // path OR point (on for the path can't be turned off per point)
 }
 
 export function resolve(path: PathParams | null | undefined, point: PathParams | null | undefined): ResolvedParams {
@@ -54,7 +54,7 @@ export function resolve(path: PathParams | null | undefined, point: PathParams |
     maxAccel: point?.maxAccel ?? path?.maxAccel ?? Infinity,
     earlyExitRange: point?.earlyExitRange ?? path?.earlyExitRange ?? NaN,
     timeout: point?.timeout ?? path?.timeout ?? Infinity,
-    interpolate: point?.interpolate ?? path?.interpolate ?? false,
+    interpolate: path?.interpolate === true || point?.interpolate === true,
   };
 }
 

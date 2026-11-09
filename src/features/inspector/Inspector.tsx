@@ -46,7 +46,8 @@ export function Inspector({ path, selectedIndex, update, onSelect, duration, sta
           </div>
           <div className="row-between">
             <span className="field-label">Interpolate heading</span>
-            <Toggle checked={pp.interpolate ?? false} title="Interpolate heading" onChange={v => setPath({ interpolate: v }, 'path-interp')} />
+            <Toggle checked={pp.interpolate ?? false} title="On: every heading point turns smoothly. Off: each point decides."
+              onChange={v => setPath({ interpolate: v }, 'path-interp')} />
           </div>
           <div className="stats">
             <div><b>{stalledAt != null ? '∞' : duration.toFixed(2)}</b><span>s</span></div>
@@ -63,7 +64,9 @@ export function Inspector({ path, selectedIndex, update, onSelect, duration, sta
   const setParam = (patch: Partial<PathParams>, key: string) => update(updatePointParams(path, i, patch), `pt-${i}-${key}`);
   const ov = point.params ?? {};
   const events = point.events ?? [];
-  const interpEffective = ov.interpolate ?? pp.interpolate ?? false;
+  // on for the whole path = on for every point; otherwise the point's own toggle decides
+  const interpForced = pp.interpolate === true;
+  const interpOn = interpForced || ov.interpolate === true;
 
   return (
     <div className="inspector scroll">
@@ -107,13 +110,9 @@ export function Inspector({ path, selectedIndex, update, onSelect, duration, sta
         {point.theta != null && (
           <div className="row-between">
             <span className="field-label">Interpolate into this heading</span>
-            <span className="head-actions">
-              {ov.interpolate != null && (
-                <IconButton icon="reset" title="Use path default" onClick={() => update(updatePointParams(path, i, { interpolate: null }))} />
-              )}
-              <Toggle checked={interpEffective} title="Interpolate heading"
-                onChange={v => update(updatePointParams(path, i, { interpolate: v }))} />
-            </span>
+            <Toggle checked={interpOn} disabled={interpForced}
+              title={interpForced ? 'On for the whole path (Path: Interpolate heading)' : 'Turn smoothly into this heading'}
+              onChange={v => update(updatePointParams(path, i, { interpolate: v ? true : null }))} />
           </div>
         )}
       </div>
