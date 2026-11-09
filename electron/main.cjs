@@ -128,6 +128,11 @@ function createWindow() {
     closing = false;
   });
 
+  // A file dropped anywhere but the field would otherwise be opened in place of the app. Reloads are still fine.
+  mainWindow.webContents.on('will-navigate', (event) => {
+    if (event.url !== mainWindow.webContents.getURL()) event.preventDefault();
+  });
+
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
   } else {
