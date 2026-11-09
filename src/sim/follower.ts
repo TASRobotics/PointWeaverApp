@@ -89,7 +89,7 @@ export function slew(vx: number, vy: number, tx: number, ty: number, maxDelta: n
 /**
  * Heading (deg) to face while driving toward pts[k].
  * interpolate on the sandwich's end point = smooth turn across the whole sandwich (no snapping).
- * interpolate off = hold the previous heading on translation points, snap on the last leg.
+ * interpolate off = aim for the end point's heading as soon as the robot leaves the previous heading point.
  */
 export function desiredHeadingDeg(
   pts: PathPoint[], prefix: number[], params: ResolvedParams[], k: number,
@@ -102,7 +102,7 @@ export function desiredHeadingDeg(
   if (b < 0) return fromDeg;
   const toDeg = pts[b].theta!;
 
-  if (!params[b].interpolate) return k === b ? toDeg : fromDeg;
+  if (!params[b].interpolate) return toDeg;
 
   const target = pts[k];
   const total = a >= 0
