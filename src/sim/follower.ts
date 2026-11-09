@@ -125,8 +125,7 @@ export function isPointFinished(
   const d = dist(poseX, poseY, p.x, p.y);
   if (!isLast && !Number.isNaN(params.earlyExitRange) && d < params.earlyExitRange) return true;
 
-  const inPosition = Math.abs(poseX - p.x) < posTolerance && Math.abs(poseY - p.y) < posTolerance;
-  if (!inPosition) return false;
+  if (d >= posTolerance) return false; // a circle around the point (straight-line distance)
   if (p.theta == null) return true;
   return Math.abs(shortestAngleDeg(headingDeg, p.theta)) < headingToleranceDeg;
 }

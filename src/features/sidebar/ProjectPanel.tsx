@@ -220,7 +220,7 @@ function RobotSection({ robot, open, onToggle }: { robot: RobotSettingsState; op
           <NumberField label="Turn P" nullable step={0.5} value={s.headingPID?.[0]} placeholder={String(d.headingPID[0])}
             title="CTRE heading gain" onChange={kp('headingPID')} />
           <NumberField label="Pos tol" suffix="m" nullable step={0.01} value={s.positionTolerance} placeholder={String(d.positionTolerance)}
-            onChange={num('positionTolerance')} />
+            title="A point counts as reached within this distance of it" onChange={num('positionTolerance')} />
           <NumberField label="Head tol" suffix="°" nullable value={s.headingTolerance} placeholder={String(d.headingTolerance)}
             onChange={num('headingTolerance')} />
           <NumberField label="Spin" suffix="°/s" nullable step={10} value={s.maxAngularRate} placeholder={String(d.maxAngularRate)}
