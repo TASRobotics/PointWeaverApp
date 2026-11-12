@@ -24,7 +24,10 @@ const clone = (d: PathDefinition): PathDefinition => structuredClone(d);
 export function usePathEditor(projectDir: string | null) {
   const [paths, setPathsState] = useState<PathFile[]>([]);
   const [currentPathName, setCurrentPathName] = useState<string | null>(null);
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  // Selected points: none, one (the Inspector edits it), or a group from a box select (dragged together).
+  const [selection, setSelection] = useState<number[]>([]);
+  const selectedIndex = selection.length === 1 ? selection[0] : null;
+  const setSelectedIndex = (i: number | null) => setSelection(i == null ? [] : [i]);
   const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(new Set());
 
   // refs so back-to-back calls in one event see each other's changes
@@ -128,7 +131,7 @@ export function usePathEditor(projectDir: string | null) {
     to.push(clone(now));
     lastAction.current = null;
     replace(name, target);
-    if (selectedIndex !== null && selectedIndex >= target.points.length) setSelectedIndex(null);
+    setSelection(sel => sel.filter(i => i < target.points.length));
   };
 
   const selectPath = (name: string | null) => {
@@ -269,6 +272,8 @@ export function usePathEditor(projectDir: string | null) {
     currentPath,
     selectedIndex,
     setSelectedIndex,
+    selection,
+    setSelection,
     dirtyPaths,
     update,
     checkpoint,

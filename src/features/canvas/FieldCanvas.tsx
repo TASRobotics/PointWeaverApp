@@ -8,13 +8,19 @@ import type { ResolvedRobot } from '../../sim/robot';
 import { poseAt } from '../../sim/simulate';
 import { resolve } from '../../sim/follower';
 import { distToSegmentSquared } from '../../utils/math';
-import { clampToField, eventPosition, insertPoint, removePoint, round2, updatePoint, wrapDeg } from '../../utils/pathOps';
+import {
+  clampToField, eventPosition, insertPoint, offsetPoints, removePoint, round2, updatePoint, wrapDeg, type PointStart,
+} from '../../utils/pathOps';
 
 interface Props {
   path: PathDefinition | null;
+  /** the one selected point (null when none, or when a group is selected) */
   selectedIndex: number | null;
+  /** every selected point: none, one, or a box-selected group */
+  selection: number[];
   hoverIndex: number | null;
   onSelect: (i: number | null) => void;
+  onSelectMany: (indices: number[]) => void;
   onHover: (i: number | null) => void;
   update: (def: PathDefinition, mode?: HistoryMode) => void;
   checkpoint: () => void;
@@ -69,6 +75,11 @@ type View = { scale: number; ox: number; oy: number };
 type BgMode = 'move' | 'tl' | 'tr' | 'bl' | 'br';
 type Drag =
   | { kind: 'point'; index: number; mode: 'position' | 'heading'; moved: boolean }
+  // a selected group, dragged together; a click without dragging selects just the point that was clicked
+  | { kind: 'group'; wx: number; wy: number; start: PointStart[]; clicked: number; moved: boolean }
+  // Shift + drag on empty field: box select (screen px); a click without dragging clears the selection
+  | { kind: 'box'; x0: number; y0: number; x1: number; y1: number; moved: boolean }
+  // deselect: a left click (no drag) on empty field clears the selection
   | { kind: 'pan'; x: number; y: number; moved: boolean; deselect: boolean }
   | { kind: 'bg'; mode: BgMode; wx: number; wy: number; cal: Calibration };
 type Hit = { index: number; mode: 'position' | 'heading' } | null;
@@ -144,9 +155,9 @@ export function FieldCanvas(props: Props) {
   // ---- hit testing ----
   const hitTest = (sx: number, sy: number): Hit => {
     const pts = latest.current.path?.points ?? [];
-    const sel = latest.current.selectedIndex;
-    const order = pts.map((_, i) => i).reverse();
-    if (sel != null && sel < pts.length) order.unshift(sel);
+    const selected = latest.current.selection.filter(i => i < pts.length);
+    // selected points first (they're drawn on top), then the rest, last drawn first
+    const order = [...selected, ...pts.map((_, i) => i).reverse().filter(i => !selected.includes(i))];
     for (const i of order) {
       const p = pts[i];
       const [px, py] = toScreen(p.x, p.y);
@@ -183,7 +194,7 @@ export function FieldCanvas(props: Props) {
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
     const { w, h, dpr } = size.current;
-    const { path, selectedIndex, hoverIndex, field, playback, grid, viewScale } = latest.current;
+    const { path, selection, hoverIndex, field, playback, grid, viewScale } = latest.current;
     const v = view.current;
     viewScale.current = v.scale;
 
@@ -251,7 +262,23 @@ export function FieldCanvas(props: Props) {
       }
     }
 
-    if (path) drawPath(ctx, path, selectedIndex, hoverIndex, playback);
+    if (path) drawPath(ctx, path, selection, hoverIndex, playback);
+
+    // box select in progress
+    const d = drag.current;
+    if (d?.kind === 'box' && d.moved) {
+      const bx = Math.min(d.x0, d.x1);
+      const by = Math.min(d.y0, d.y1);
+      const bw = Math.abs(d.x1 - d.x0);
+      const bh = Math.abs(d.y1 - d.y0);
+      ctx.fillStyle = C.halo;
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = C.muted;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(Math.round(bx) + 0.5, Math.round(by) + 0.5, Math.round(bw), Math.round(bh));
+      ctx.setLineDash([]);
+    }
 
     // cursor readout
     const c = cursor.current;
@@ -326,7 +353,7 @@ export function FieldCanvas(props: Props) {
   };
 
   const drawPath = (
-    ctx: CanvasRenderingContext2D, path: PathDefinition, selectedIndex: number | null, hoverIndex: number | null, playback: Playback,
+    ctx: CanvasRenderingContext2D, path: PathDefinition, selection: number[], hoverIndex: number | null, playback: Playback,
   ) => {
     const pts = path.points;
     const v = view.current;
@@ -369,7 +396,7 @@ export function FieldCanvas(props: Props) {
       const exit = resolve(path.params, pts[i].params).earlyExitRange;
       if (!(exit > 0)) continue;
       const [sx, sy] = toScreen(pts[i].x, pts[i].y);
-      ctx.strokeStyle = i === selectedIndex ? C.ringSelected : C.ring;
+      ctx.strokeStyle = selection.includes(i) ? C.ringSelected : C.ring;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 4]);
       ctx.beginPath();
@@ -400,16 +427,15 @@ export function FieldCanvas(props: Props) {
       }
     }
 
-    // points (selected drawn last so it's on top)
-    const order = pts.map((_, i) => i).filter(i => i !== selectedIndex);
-    if (selectedIndex != null && selectedIndex < pts.length) order.push(selectedIndex);
+    // points (selected drawn last so they're on top)
+    const order = [...pts.map((_, i) => i).filter(i => !selection.includes(i)), ...selection.filter(i => i < pts.length)];
     ctx.font = '10px Inter, system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     for (const i of order) {
       const p = pts[i];
       const [sx, sy] = toScreen(p.x, p.y);
-      const sel = i === selectedIndex;
+      const sel = selection.includes(i);
       const hov = i === hoverIndex;
 
       if (sel || hov) {
@@ -506,9 +532,10 @@ export function FieldCanvas(props: Props) {
   const onPointerDown = (e: React.PointerEvent) => {
     const { sx, sy } = local(e);
     const w = toWorld(sx, sy);
-    const { path, selectedIndex, onSelect, update, field } = latest.current;
+    const { path, selectedIndex, selection, onSelect, update, field } = latest.current;
     canvasRef.current!.setPointerCapture(e.pointerId);
 
+    // right or middle drag always pans
     if (e.button === 1 || e.button === 2) {
       drag.current = { kind: 'pan', x: sx, y: sy, moved: false, deselect: false };
       return;
@@ -525,36 +552,50 @@ export function FieldCanvas(props: Props) {
     if (path && hit) {
       if (e.shiftKey) {
         update(removePoint(path, hit.index));
-        if (selectedIndex === hit.index) onSelect(null);
-        else if (selectedIndex != null && selectedIndex > hit.index) onSelect(selectedIndex - 1);
+        // a group (selectedIndex null) is dropped; a single selection keeps pointing at the same point
+        if (selectedIndex == null || selectedIndex === hit.index) onSelect(null);
+        else if (selectedIndex > hit.index) onSelect(selectedIndex - 1);
         return;
       }
+      // grabbing a selected group by one of its points: move them all together
+      if (hit.mode === 'position' && selection.length > 1 && selection.includes(hit.index)) {
+        const start = selection.filter(i => i < path.points.length).map(i => ({ i, x: path.points[i].x, y: path.points[i].y }));
+        drag.current = { kind: 'group', wx: w.x, wy: w.y, start, clicked: hit.index, moved: false };
+        setCursor('grabbing');
+        return;
+      }
+      // another point, or any point's heading handle: back to just that point
       onSelect(hit.index);
       drag.current = { kind: 'point', index: hit.index, mode: hit.mode, moved: false };
       setCursor('grabbing');
       return;
     }
 
-    if (path && e.detail === 2) {
-      // double click: insert on the nearest segment, otherwise append
-      const pts = path.points;
-      let at = pts.length;
-      let best = (HIT_POINT * 1.5 / view.current.scale) ** 2;
-      for (let i = 0; i < pts.length - 1; i++) {
-        const d = distToSegmentSquared(w.x, w.y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
-        if (d < best) {
-          best = d;
-          at = i + 1;
-        }
-      }
-      const pos = clampToField(w.x, w.y);
-      update(insertPoint(path, at, { ...pos, theta: 0 }));
-      onSelect(at);
-      drag.current = null;
-      return;
-    }
+    // empty field: Shift + drag box-selects, a plain drag pans (double click adds a point, see onDoubleClick)
+    drag.current = e.shiftKey
+      ? { kind: 'box', x0: sx, y0: sy, x1: sx, y1: sy, moved: false }
+      : { kind: 'pan', x: sx, y: sy, moved: false, deselect: true };
+  };
 
-    drag.current = { kind: 'pan', x: sx, y: sy, moved: false, deselect: true };
+  // Double click on empty field: insert on the nearest segment, otherwise append. This uses the dblclick
+  // event because Chromium reports a click count (detail) of 0 on every pointer event.
+  const onDoubleClick = (e: React.MouseEvent) => {
+    const { sx, sy } = local(e);
+    const { path, update, onSelect } = latest.current;
+    if (!path || e.button !== 0 || hitTest(sx, sy) || bgHit(sx, sy)) return;
+    const w = toWorld(sx, sy);
+    const pts = path.points;
+    let at = pts.length;
+    let best = (HIT_POINT * 1.5 / view.current.scale) ** 2;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const d = distToSegmentSquared(w.x, w.y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+      if (d < best) {
+        best = d;
+        at = i + 1;
+      }
+    }
+    update(insertPoint(path, at, { ...clampToField(w.x, w.y), theta: 0 }));
+    onSelect(at);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -571,6 +612,25 @@ export function FieldCanvas(props: Props) {
       if (idx !== hoverIndex) onHover(idx);
       const bg = bgHit(sx, sy);
       setCursor(hit ? 'grab' : bg === 'move' ? 'move' : bg ? 'nwse-resize' : 'default');
+      return;
+    }
+
+    if (d.kind === 'box') {
+      d.x1 = sx;
+      d.y1 = sy;
+      if (!d.moved && Math.hypot(sx - d.x0, sy - d.y0) >= 3) d.moved = true;
+      return;
+    }
+
+    if (d.kind === 'group' && path) {
+      const dx = w.x - d.wx;
+      const dy = w.y - d.wy;
+      if (!d.moved) {
+        if (Math.hypot(dx, dy) * view.current.scale < 3) return;
+        checkpoint();
+        d.moved = true;
+      }
+      update(offsetPoints(path, d.start, dx, dy), false);
       return;
     }
 
@@ -636,7 +696,23 @@ export function FieldCanvas(props: Props) {
     drag.current = null;
     canvasRef.current?.releasePointerCapture(e.pointerId);
     if (!d) return;
-    if (d.kind === 'pan' && !d.moved && d.deselect) latest.current.onSelect(null);
+    const { path, onSelect, onSelectMany } = latest.current;
+    if (d.kind === 'box') {
+      if (!d.moved) {
+        onSelect(null); // a click on empty field clears the selection
+      } else {
+        const [x0, x1] = [Math.min(d.x0, d.x1), Math.max(d.x0, d.x1)];
+        const [y0, y1] = [Math.min(d.y0, d.y1), Math.max(d.y0, d.y1)];
+        const inside = (path?.points ?? []).flatMap((p, i) => {
+          const [px, py] = toScreen(p.x, p.y);
+          return px >= x0 && px <= x1 && py >= y0 && py <= y1 ? [i] : [];
+        });
+        onSelectMany(inside);
+      }
+      dirty.current = true; // take the box off the screen
+    }
+    if (d.kind === 'pan' && !d.moved && d.deselect) onSelect(null); // a click on empty field clears the selection
+    if (d.kind === 'group' && !d.moved) onSelect(d.clicked);
     if (d.kind === 'bg') latest.current.field.commit();
     setCursor('default');
   };
@@ -687,6 +763,7 @@ export function FieldCanvas(props: Props) {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onPointerLeave={onPointerLeave}
+        onDoubleClick={onDoubleClick}
         onWheel={onWheel}
         onContextMenu={e => e.preventDefault()}
       />

@@ -5,6 +5,8 @@ import { HeadingGlyph, IconButton } from '../../components/Icon';
 interface Props {
   path: PathDefinition;
   selectedIndex: number | null;
+  /** every selected point (a box-selected group highlights all its rows) */
+  selection: number[];
   hoverIndex: number | null;
   onSelect: (i: number | null) => void;
   onHover: (i: number | null) => void;
@@ -13,8 +15,11 @@ interface Props {
   stalledAt: number | null;
 }
 
-/** Every point in order, so overlapping points on the field are still reachable. Drag rows to reorder. */
-export function PointList({ path, selectedIndex, hoverIndex, onSelect, onHover, onAdd, onMove, stalledAt }: Props) {
+/**
+ * Every point in order, so overlapping points on the field are still reachable. Drag rows to reorder.
+ * Clicking a row selects just that point.
+ */
+export function PointList({ path, selectedIndex, selection, hoverIndex, onSelect, onHover, onAdd, onMove, stalledAt }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
@@ -43,7 +48,7 @@ export function PointList({ path, selectedIndex, hoverIndex, onSelect, onHover, 
             draggable
             className={[
               'list-row point-row',
-              i === selectedIndex && 'selected',
+              selection.includes(i) && 'selected',
               i === hoverIndex && 'hovered',
               dropAt === i && dragFrom !== null && (dragFrom > i ? 'drop-above' : 'drop-below'),
             ].filter(Boolean).join(' ')}

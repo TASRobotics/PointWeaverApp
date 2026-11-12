@@ -44,6 +44,31 @@ export function removePoint(def: PathDefinition, index: number): PathDefinition 
   return withPoints(def, def.points.filter((_, j) => j !== index));
 }
 
+export function removePoints(def: PathDefinition, indices: number[]): PathDefinition {
+  const drop = new Set(indices);
+  return withPoints(def, def.points.filter((_, j) => !drop.has(j)));
+}
+
+/** Where some points were when a group drag started. */
+export type PointStart = { i: number; x: number; y: number };
+
+/**
+ * Move a group of points by (dx, dy) from where they started. The offset is clamped so the whole group
+ * stays on the field (it slides along the edge instead of squashing).
+ */
+export function offsetPoints(def: PathDefinition, start: PointStart[], dx: number, dy: number): PathDefinition {
+  if (start.length === 0) return def;
+  const xs = start.map(s => s.x);
+  const ys = start.map(s => s.y);
+  const ox = Math.max(-Math.min(...xs), Math.min(FIELD_WIDTH - Math.max(...xs), dx));
+  const oy = Math.max(-Math.min(...ys), Math.min(FIELD_HEIGHT - Math.max(...ys), dy));
+  const moved = new Map(start.map(s => [s.i, { x: round2(s.x + ox), y: round2(s.y + oy) }]));
+  return withPoints(def, def.points.map((p, j) => {
+    const m = moved.get(j);
+    return m ? { ...p, ...m } : p;
+  }));
+}
+
 export function movePoint(def: PathDefinition, from: number, to: number): PathDefinition {
   const points = [...def.points];
   const [p] = points.splice(from, 1);

@@ -8,6 +8,9 @@ import { removePoint, setEvents, updatePathParams, updatePoint, updatePointParam
 interface Props {
   path: PathDefinition;
   selectedIndex: number | null;
+  /** how many points are selected; more than 1 = a box-selected group */
+  selectionCount: number;
+  onDeleteSelection: () => void;
   update: (def: PathDefinition, mode?: HistoryMode) => void;
   onSelect: (i: number | null) => void;
   duration: number;
@@ -17,9 +20,26 @@ interface Props {
 
 const show = (v: number | null | undefined, fallback: string) => (v != null ? String(v) : fallback);
 
-export function Inspector({ path, selectedIndex, update, onSelect, duration, stalledAt, robot }: Props) {
+export function Inspector({ path, selectedIndex, selectionCount, onDeleteSelection, update, onSelect, duration, stalledAt, robot }: Props) {
   const point = selectedIndex != null ? path.points[selectedIndex] : null;
   const pp = path.params ?? {};
+
+  if (selectionCount > 1) {
+    return (
+      <div className="inspector scroll">
+        <div className="section-head">
+          <span>Selected <b className="count">{selectionCount}</b></span>
+          <IconButton icon="trash" title="Delete selected points (Del)" onClick={onDeleteSelection} />
+        </div>
+        <div className="pad stack">
+          <span className="hint">
+            Drag any selected point to move them all. Click empty field, another point, or a heading handle
+            to go back to one point. Shift + drag on empty field selects a new group.
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   if (!point || selectedIndex == null) {
     const setPath = (patch: Partial<PathParams>, key: string) => update(updatePathParams(path, patch), key);

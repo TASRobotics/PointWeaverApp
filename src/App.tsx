@@ -12,7 +12,7 @@ import { Toolbar } from './features/canvas/Toolbar';
 import { PointList } from './features/inspector/PointList';
 import { Inspector } from './features/inspector/Inspector';
 import { Icon } from './components/Icon';
-import { appendPoint, flipX, flipY, movePoint, removePoint } from './utils/pathOps';
+import { appendPoint, flipX, flipY, movePoint, removePoints } from './utils/pathOps';
 
 const LAST_PROJECT = 'pw:lastProject';
 
@@ -54,7 +54,7 @@ export default function App() {
     } catch { /* not important */ }
   }, [grid]);
 
-  const { currentPathName, currentPath: path, selectedIndex, setSelectedIndex, update } = editor;
+  const { currentPathName, currentPath: path, selectedIndex, setSelectedIndex, selection, setSelection, update } = editor;
   const hasPath = currentPathName != null;
 
   // new path = fresh ghost
@@ -81,22 +81,20 @@ export default function App() {
     setSelectedIndex(path.points.length);
   };
 
+  /** Delete the selected point, or the whole selected group (one undo step). */
   const deleteSelected = () => {
-    if (selectedIndex == null) return;
-    update(removePoint(path, selectedIndex));
-    setSelectedIndex(null);
+    if (selection.length === 0) return;
+    update(removePoints(path, selection));
+    setSelection([]);
   };
 
   const reorder = (from: number, to: number) => {
     update(movePoint(path, from, to));
-    if (selectedIndex === from) setSelectedIndex(to);
-    else if (selectedIndex != null) {
-      // keep the same point selected after the shuffle
-      const order = path.points.map((_, i) => i);
-      const [m] = order.splice(from, 1);
-      order.splice(to, 0, m);
-      setSelectedIndex(order.indexOf(selectedIndex));
-    }
+    // keep the same points selected after the shuffle
+    const order = path.points.map((_, i) => i);
+    const [m] = order.splice(from, 1);
+    order.splice(to, 0, m);
+    setSelection(selection.map(i => order.indexOf(i)));
   };
 
   const stepSelection = (dir: 1 | -1) => {
@@ -173,8 +171,10 @@ export default function App() {
         <FieldCanvas
           path={hasPath ? path : null}
           selectedIndex={selectedIndex}
+          selection={selection}
           hoverIndex={hoverIndex}
           onSelect={setSelectedIndex}
+          onSelectMany={setSelection}
           onHover={setHoverIndex}
           update={update}
           checkpoint={editor.checkpoint}
@@ -205,6 +205,7 @@ export default function App() {
             <PointList
               path={path}
               selectedIndex={selectedIndex}
+              selection={selection}
               hoverIndex={hoverIndex}
               onSelect={setSelectedIndex}
               onHover={setHoverIndex}
@@ -215,6 +216,8 @@ export default function App() {
             <Inspector
               path={path}
               selectedIndex={selectedIndex}
+              selectionCount={selection.length}
+              onDeleteSelection={deleteSelected}
               update={update}
               onSelect={setSelectedIndex}
               duration={playback.sim.duration}
