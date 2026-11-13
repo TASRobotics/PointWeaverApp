@@ -192,7 +192,10 @@ function FieldImageMenu({ field }: { field: FieldImage }) {
   );
 }
 
-/** robot.json editor: the numbers the robot and the ghost share. Empty field = library default. */
+/**
+ * robot.json editor: the numbers the robot and the ghost share. Empty field = library default.
+ * The settings slide up out of the Robot header (a drawer above it) so the header and its buttons never move.
+ */
 function RobotSection({ robot, open, onToggle }: { robot: RobotSettingsState; open: boolean; onToggle: () => void }) {
   const s = robot.settings ?? {};
   const d = DEFAULT_ROBOT;
@@ -207,6 +210,30 @@ function RobotSection({ robot, open, onToggle }: { robot: RobotSettingsState; op
 
   return (
     <>
+      {/* always rendered so it can animate closed too; inert while closed so its fields can't be tabbed into */}
+      <div className={`drawer ${open ? 'open' : ''}`} inert={!open} aria-hidden={!open}>
+        <div className="drawer-inner">
+          <div className="grid-2 drawer-body">
+            <NumberField label="Max" suffix="m/s" nullable value={s.maxSpeed} placeholder={String(d.maxSpeed)} onChange={num('maxSpeed')} />
+            <NumberField label="Accel" suffix="m/s²" nullable value={s.maxAccel} placeholder={String(d.maxAccel)} onChange={num('maxAccel')} />
+            <NumberField label="Drive P" nullable step={0.5} value={s.translationPID?.[0]} placeholder={String(d.translationPID[0])}
+              title="Final approach gain" onChange={kp('translationPID')} />
+            <NumberField label="Turn P" nullable step={0.5} value={s.headingPID?.[0]} placeholder={String(d.headingPID[0])}
+              title="CTRE heading gain" onChange={kp('headingPID')} />
+            <NumberField label="Pos tol" suffix="m" nullable step={0.01} value={s.positionTolerance} placeholder={String(d.positionTolerance)}
+              title="A point counts as reached within this distance of it" onChange={num('positionTolerance')} />
+            <NumberField label="Head tol" suffix="°" nullable value={s.headingTolerance} placeholder={String(d.headingTolerance)}
+              onChange={num('headingTolerance')} />
+            <NumberField label="Spin" suffix="°/s" nullable step={10} value={s.maxAngularRate} placeholder={String(d.maxAngularRate)}
+              title="Fastest the robot can rotate" onChange={num('maxAngularRate')} />
+            <span />
+            <NumberField label="Length" suffix="m" nullable step={0.01} value={s.robotLength} placeholder={String(d.robotLength)}
+              title="Bumper to bumper (ghost only)" onChange={num('robotLength')} />
+            <NumberField label="Width" suffix="m" nullable step={0.01} value={s.robotWidth} placeholder={String(d.robotWidth)}
+              title="Bumper to bumper (ghost only)" onChange={num('robotWidth')} />
+          </div>
+        </div>
+      </div>
       <div className="section-head">
         <span>
           Robot
@@ -217,27 +244,6 @@ function RobotSection({ robot, open, onToggle }: { robot: RobotSettingsState; op
           <IconButton icon="sliders" title="Robot settings (robot.json)" active={open} onClick={onToggle} />
         </span>
       </div>
-      {open && (
-        <div className="grid-2 pad">
-          <NumberField label="Max" suffix="m/s" nullable value={s.maxSpeed} placeholder={String(d.maxSpeed)} onChange={num('maxSpeed')} />
-          <NumberField label="Accel" suffix="m/s²" nullable value={s.maxAccel} placeholder={String(d.maxAccel)} onChange={num('maxAccel')} />
-          <NumberField label="Drive P" nullable step={0.5} value={s.translationPID?.[0]} placeholder={String(d.translationPID[0])}
-            title="Final approach gain" onChange={kp('translationPID')} />
-          <NumberField label="Turn P" nullable step={0.5} value={s.headingPID?.[0]} placeholder={String(d.headingPID[0])}
-            title="CTRE heading gain" onChange={kp('headingPID')} />
-          <NumberField label="Pos tol" suffix="m" nullable step={0.01} value={s.positionTolerance} placeholder={String(d.positionTolerance)}
-            title="A point counts as reached within this distance of it" onChange={num('positionTolerance')} />
-          <NumberField label="Head tol" suffix="°" nullable value={s.headingTolerance} placeholder={String(d.headingTolerance)}
-            onChange={num('headingTolerance')} />
-          <NumberField label="Spin" suffix="°/s" nullable step={10} value={s.maxAngularRate} placeholder={String(d.maxAngularRate)}
-            title="Fastest the robot can rotate" onChange={num('maxAngularRate')} />
-          <span />
-          <NumberField label="Length" suffix="m" nullable step={0.01} value={s.robotLength} placeholder={String(d.robotLength)}
-            title="Bumper to bumper (ghost only)" onChange={num('robotLength')} />
-          <NumberField label="Width" suffix="m" nullable step={0.01} value={s.robotWidth} placeholder={String(d.robotWidth)}
-            title="Bumper to bumper (ghost only)" onChange={num('robotWidth')} />
-        </div>
-      )}
     </>
   );
 }

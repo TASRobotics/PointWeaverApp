@@ -191,6 +191,41 @@ input {
   border-top: 1px solid var(--line);
 }
 
+/* robot settings: a drawer above the Robot header that floats up as it opens, so the header never moves */
+.drawer {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.drawer.open {
+  grid-template-rows: 1fr;
+}
+
+.drawer-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.drawer-body {
+  padding: 14px 14px 2px;
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.16s ease, transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.drawer.open .drawer-body {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer,
+  .drawer-body {
+    transition: none;
+  }
+}
+
 /* ---------- section heads ---------- */
 
 .section-head {
