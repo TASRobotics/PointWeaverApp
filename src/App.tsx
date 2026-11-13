@@ -70,6 +70,14 @@ export default function App() {
   const { currentPathName, currentPath: path, selectedIndex, setSelectedIndex, selection, setSelection, update } = editor;
   const hasPath = currentPathName != null;
 
+  // an event row in the points list was clicked: select its point and have the Inspector show that event
+  // (n changes on every click, so clicking the same event again still scrolls to it)
+  const [eventFocus, setEventFocus] = useState<{ point: number; event: number; n: number } | null>(null);
+  const selectEvent = (point: number, event: number) => {
+    setSelectedIndex(point);
+    setEventFocus(f => ({ point, event, n: (f?.n ?? 0) + 1 }));
+  };
+
   // new path = fresh ghost
   const stopPlayback = useRef(playback.stop);
   stopPlayback.current = playback.stop;
@@ -225,6 +233,7 @@ export default function App() {
               selection={selection}
               hoverIndex={hoverIndex}
               onSelect={setSelectedIndex}
+              onSelectEvent={selectEvent}
               onHover={setHoverIndex}
               onAdd={addPoint}
               onMove={reorder}
@@ -240,6 +249,7 @@ export default function App() {
               duration={playback.sim.duration}
               stalledAt={playback.sim.stalledAt}
               robot={robotSettings.robot}
+              eventFocus={eventFocus}
             />
           </>
         ) : (

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import type { PathDefinition, PathParams } from '../../types';
 import type { HistoryMode } from '../../hooks/usePathEditor';
 import type { ResolvedRobot } from '../../sim/robot';
@@ -16,13 +17,31 @@ interface Props {
   duration: number;
   stalledAt: number | null;
   robot: ResolvedRobot;
+  /** an event picked in the points list: scroll to it and flash it (n changes on every pick) */
+  eventFocus: { point: number; event: number; n: number } | null;
 }
 
 const show = (v: number | null | undefined, fallback: string) => (v != null ? String(v) : fallback);
 
-export function Inspector({ path, selectedIndex, selectionCount, onDeleteSelection, update, onSelect, duration, stalledAt, robot }: Props) {
+export function Inspector({
+  path, selectedIndex, selectionCount, onDeleteSelection, update, onSelect, duration, stalledAt, robot, eventFocus,
+}: Props) {
   const point = selectedIndex != null ? path.points[selectedIndex] : null;
   const pp = path.params ?? {};
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!eventFocus || eventFocus.point !== selectedIndex) return;
+    const el = rootRef.current?.querySelector<HTMLElement>(`.event[data-event="${eventFocus.event}"]`);
+    if (!el) return;
+    // Instant, not smooth: when the Inspector has just switched to this point it may only now have become scrollable,
+    // and Chromium can drop a smooth scroll on a scroller that wasn't scrollable yet. The flash shows where it landed.
+    el.scrollIntoView({ block: 'nearest' });
+    el.classList.remove('flash');
+    void el.offsetWidth; // restart the animation if it's still running
+    el.classList.add('flash');
+    el.addEventListener('animationend', () => el.classList.remove('flash'), { once: true });
+  }, [eventFocus, selectedIndex]);
 
   if (selectionCount > 1) {
     return (
@@ -89,7 +108,7 @@ export function Inspector({ path, selectedIndex, selectionCount, onDeleteSelecti
   const interpOn = interpForced || ov.interpolate === true;
 
   return (
-    <div className="inspector scroll">
+    <div className="inspector scroll" ref={rootRef}>
       <div className="section-head">
         <span>Point <b className="count">{i}</b></span>
         <IconButton icon="trash" title="Delete point (Del)" onClick={() => {
@@ -143,7 +162,8 @@ export function Inspector({ path, selectedIndex, selectionCount, onDeleteSelecti
       </div>
       <div className="pad stack">
         {events.map((ev, e) => (
-          <div key={e} className="event">
+          // keyed by point too, so switching points never hands one point's event box (and its highlight) to another
+          <div key={`${i}-${e}`} className="event" data-event={e}>
             <div className="event-top">
               <input className="text-input" value={ev.name} spellCheck={false}
                 onChange={el => update(setEvents(path, i, events.map((x, j) => (j === e ? { ...x, name: el.target.value } : x))), `ev-${i}-${e}-name`)} />
