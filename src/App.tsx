@@ -26,12 +26,22 @@ const readLastProject = () => {
 };
 
 const GRID = 'pw:grid';
+const SPEED = 'pw:speedColors';
 
 const readGrid = () => {
   try {
     return localStorage.getItem(GRID) !== 'off';
   } catch {
     return true;
+  }
+};
+
+// off unless turned on
+const readSpeed = () => {
+  try {
+    return localStorage.getItem(SPEED) === 'on';
+  } catch {
+    return false;
   }
 };
 
@@ -47,12 +57,15 @@ export default function App() {
   const [fitToken, setFitToken] = useState(0);
   const [grid, setGrid] = useState(readGrid);
   const toggleGrid = () => setGrid(g => !g);
+  const [speedColors, setSpeedColors] = useState(readSpeed);
+  const toggleSpeedColors = () => setSpeedColors(s => !s);
 
   useEffect(() => {
     try {
       localStorage.setItem(GRID, grid ? 'on' : 'off');
+      localStorage.setItem(SPEED, speedColors ? 'on' : 'off');
     } catch { /* not important */ }
-  }, [grid]);
+  }, [grid, speedColors]);
 
   const { currentPathName, currentPath: path, selectedIndex, setSelectedIndex, selection, setSelection, update } = editor;
   const hasPath = currentPathName != null;
@@ -139,6 +152,8 @@ export default function App() {
         setFitToken(t => t + 1);
       } else if (k === 'g') {
         toggleGrid();
+      } else if (k === 'v') {
+        toggleSpeedColors();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -165,7 +180,8 @@ export default function App() {
   return (
     <div className="app">
       <ProjectPanel projectDir={projectDir} onOpenProject={openProject} editor={editor} field={field}
-        robot={robotSettings} theme={theme} onToggleTheme={toggleTheme} grid={grid} onToggleGrid={toggleGrid} />
+        robot={robotSettings} theme={theme} onToggleTheme={toggleTheme} grid={grid} onToggleGrid={toggleGrid}
+        speedColors={speedColors} onToggleSpeedColors={toggleSpeedColors} />
 
       <main className="stage">
         <FieldCanvas
@@ -184,6 +200,7 @@ export default function App() {
           theme={theme}
           robot={robotSettings.robot}
           grid={grid}
+          speedColors={speedColors}
           viewScale={viewScale}
         />
         {hasPath && (

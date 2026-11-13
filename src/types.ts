@@ -37,6 +37,8 @@ export interface SimulatedPose {
   x: number;
   y: number;
   theta: number;
+  /** m/s, how fast the ghost is driving here */
+  speed: number;
 }
 
 export interface FieldImageConfig {

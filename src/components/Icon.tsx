@@ -18,6 +18,7 @@ const ICONS: Record<string, ReactNode> = {
   check: <path d="M3 8.5l3.2 3.2L13 4.8" />,
   grid: <><rect x="2.5" y="2.5" width="11" height="11" rx="1" /><path d="M6.2 2.5v11M9.8 2.5v11M2.5 6.2h11M2.5 9.8h11" /></>,
   reset: <><path d="M3.5 8a4.5 4.5 0 1 0 1.3-3.2" /><path d="M3.5 2.5v2.5H6" /></>,
+  speed: <><path d="M2.5 11.5a5.5 5.5 0 0 1 11 0" /><path d="M8 11.5l2.6-3.4" /><circle cx="8" cy="11.5" r=".9" fill="currentColor" stroke="none" /></>,
   warn: <><path d="M8 2.5l6 10.5H2z" /><path d="M8 6.5v3M8 11.3v.2" /></>,
   grip: <><circle cx="6" cy="4" r=".9" fill="currentColor" stroke="none" /><circle cx="10" cy="4" r=".9" fill="currentColor" stroke="none" /><circle cx="6" cy="8" r=".9" fill="currentColor" stroke="none" /><circle cx="10" cy="8" r=".9" fill="currentColor" stroke="none" /><circle cx="6" cy="12" r=".9" fill="currentColor" stroke="none" /><circle cx="10" cy="12" r=".9" fill="currentColor" stroke="none" /></>,
   importFile: <><path d="M9 2.5H4.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V6z" /><path d="M9 2.5V6h3.5" /><path d="M8 7.5v4.5M6.3 10.3 8 12l1.7-1.7" /></>,

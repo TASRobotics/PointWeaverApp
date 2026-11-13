@@ -17,6 +17,8 @@ interface Props {
   onToggleTheme: () => void;
   grid: boolean;
   onToggleGrid: () => void;
+  speedColors: boolean;
+  onToggleSpeedColors: () => void;
 }
 
 const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
@@ -46,7 +48,9 @@ function InlineInput({ initial, placeholder, onSubmit, onDone }: {
   );
 }
 
-export function ProjectPanel({ projectDir, onOpenProject, editor, field, robot, theme, onToggleTheme, grid, onToggleGrid }: Props) {
+export function ProjectPanel({
+  projectDir, onOpenProject, editor, field, robot, theme, onToggleTheme, grid, onToggleGrid, speedColors, onToggleSpeedColors,
+}: Props) {
   const [creating, setCreating] = useState(false);
   const [robotOpen, setRobotOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -104,6 +108,8 @@ export function ProjectPanel({ projectDir, onOpenProject, editor, field, robot, 
           <span>Field</span>
           <span className="head-actions">
             <IconButton icon="grid" title={grid ? 'Hide grid (G)' : 'Show grid (G)'} active={grid} onClick={onToggleGrid} />
+            <IconButton icon="speed" title={speedColors ? 'Plain ghost trail (V)' : 'Color the ghost trail by speed (V)'}
+              active={speedColors} onClick={onToggleSpeedColors} />
             <FieldImageMenu field={field} />
             {field.custom && (
               <>

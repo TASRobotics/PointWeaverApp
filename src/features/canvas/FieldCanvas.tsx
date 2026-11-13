@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { PathDefinition } from '../../types';
+import type { PathDefinition, SimulatedPose } from '../../types';
 import type { HistoryMode } from '../../hooks/usePathEditor';
 import type { Calibration, FieldImage } from '../../hooks/useFieldImage';
 import type { Playback } from '../../hooks/usePlayback';
@@ -8,6 +8,7 @@ import type { ResolvedRobot } from '../../sim/robot';
 import { poseAt } from '../../sim/simulate';
 import { resolve } from '../../sim/follower';
 import { distToSegmentSquared } from '../../utils/math';
+import { speedColor, speedStops } from '../../utils/speedColor';
 import {
   clampToField, eventPosition, insertPoint, offsetPoints, removePoint, round2, updatePoint, wrapDeg, type PointStart,
 } from '../../utils/pathOps';
@@ -31,6 +32,8 @@ interface Props {
   robot: ResolvedRobot;
   /** draw the 1 m grid lines (the edge rulers are always drawn) */
   grid: boolean;
+  /** draw the ghost's trail colored by speed (solid, red slow to green fast) instead of the plain dashed trail */
+  speedColors: boolean;
   /** kept up to date with the current zoom (CSS px per meter), for placing new background images */
   viewScale: { current: number };
 }
@@ -44,6 +47,8 @@ const HIT_TIP = 8;
 const HIT_HANDLE = 8;
 const FIT_MARGIN = 28;
 const FIT_BOTTOM = 76; // room for the toolbar
+const HIT_TRAIL = 6;
+const SPEED_LEVELS = 48; // trail segments are batched by speed color, quantized to this many levels
 
 export type Theme = 'night' | 'day';
 
@@ -87,6 +92,7 @@ type Hit = { index: number; mode: 'position' | 'heading' } | null;
 export function FieldCanvas(props: Props) {
   const { path, field, fitToken } = props;
   const C = PALETTES[props.theme];
+  const theme = props.theme;
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const size = useRef({ w: 0, h: 0, dpr: 1 });
@@ -95,6 +101,7 @@ export function FieldCanvas(props: Props) {
   const drag = useRef<Drag | null>(null);
   const cursor = useRef<{ sx: number; sy: number; wx: number; wy: number } | null>(null);
   const hoveredEvent = useRef<{ name: string; sx: number; sy: number } | null>(null);
+  const hoveredTrail = useRef<{ speed: number; t: number; sx: number; sy: number } | null>(null);
   const dirty = useRef(true);
   const latest = useRef(props);
   latest.current = props;
@@ -263,6 +270,9 @@ export function FieldCanvas(props: Props) {
     }
 
     if (path) drawPath(ctx, path, selection, hoverIndex, playback);
+    else hoveredTrail.current = hoveredEvent.current = null;
+    if (path && latest.current.speedColors && playback.sim.poses.length > 1) drawSpeedLegend(ctx);
+    drawTooltips(ctx);
 
     // box select in progress
     const d = drag.current;
@@ -352,31 +362,132 @@ export function FieldCanvas(props: Props) {
     ctx.restore();
   };
 
+  /** The plain ghost trail: dashed, under the path line, so corner cutting shows where the two split. */
+  const drawGhostTrail = (ctx: CanvasRenderingContext2D, poses: SimulatedPose[]) => {
+    if (poses.length < 2) return;
+    ctx.strokeStyle = C.ghostTrail;
+    ctx.lineWidth = 1.75;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    poses.forEach((p, i) => {
+      const [sx, sy] = toScreen(p.x, p.y);
+      if (i === 0) ctx.moveTo(sx, sy);
+      else ctx.lineTo(sx, sy);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+  };
+
+  /**
+   * The speed trail: a solid line on top of the path line (so the two don't show doubled up), each stretch colored
+   * by how fast the ghost drives there (0 to the robot's top speed), with a thin outline in the background color so
+   * it reads on any field image. Runs of the same color are stroked as one path.
+   * Also notes the trail spot under the cursor, for the speed tooltip.
+   */
+  const drawSpeedTrail = (ctx: CanvasRenderingContext2D, poses: SimulatedPose[]) => {
+    if (poses.length < 2) return;
+    const top = latest.current.robot.maxSpeed;
+    const level = (speed: number) => Math.round(Math.min(1, speed / top) * (SPEED_LEVELS - 1));
+    const pts = poses.map(p => toScreen(p.x, p.y));
+
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = C.bg;
+    ctx.globalAlpha = 0.7;
+    ctx.lineWidth = 4.5;
+    ctx.beginPath();
+    pts.forEach(([sx, sy], i) => (i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy)));
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    ctx.lineWidth = 2.5;
+    let run = -1;
+    for (let i = 1; i < pts.length; i++) {
+      const lv = level(poses[i].speed);
+      if (lv !== run) {
+        if (run >= 0) ctx.stroke();
+        run = lv;
+        ctx.strokeStyle = speedColor(lv / (SPEED_LEVELS - 1), theme);
+        ctx.beginPath();
+        ctx.moveTo(pts[i - 1][0], pts[i - 1][1]);
+      }
+      ctx.lineTo(pts[i][0], pts[i][1]);
+    }
+    ctx.stroke();
+    ctx.lineCap = 'butt';
+    ctx.lineJoin = 'miter';
+
+    const c = cursor.current;
+    if (!c || drag.current) return;
+    let best = -1;
+    let bestD = HIT_TRAIL;
+    pts.forEach(([sx, sy], i) => {
+      const d = Math.hypot(c.sx - sx, c.sy - sy);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    });
+    if (best >= 0) hoveredTrail.current = { speed: poses[best].speed, t: poses[best].t, sx: pts[best][0], sy: pts[best][1] };
+  };
+
+  /** Top-right key for the trail colors: the ramp from stopped to the robot's top speed. */
+  const drawSpeedLegend = (ctx: CanvasRenderingContext2D) => {
+    const { w } = size.current;
+    const top = latest.current.robot.maxSpeed;
+    const barW = 72;
+    const barH = 6;
+    ctx.font = '10px Inter, system-ui, sans-serif';
+    const right = `${Math.round(top * 10) / 10} m/s`;
+    const rw = ctx.measureText(right).width;
+    const lw = ctx.measureText('Speed').width;
+    const zw = ctx.measureText('0').width;
+    const boxW = 10 + lw + 8 + zw + 6 + barW + 6 + rw + 10;
+    const bx = w - 14 - boxW;
+    const by = 8;
+    ctx.fillStyle = C.bg;
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, boxW, 20, 5);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    let x = bx + 10;
+    const mid = by + 10.5;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = C.label;
+    ctx.fillText('Speed', x, mid);
+    x += lw + 8;
+    ctx.fillText('0', x, mid);
+    x += zw + 6;
+    const grad = ctx.createLinearGradient(x, 0, x + barW, 0);
+    const stops = speedStops(theme);
+    stops.forEach((hex, i) => grad.addColorStop(i / (stops.length - 1), hex));
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.roundRect(x, mid - barH / 2, barW, barH, 3);
+    ctx.fill();
+    x += barW + 6;
+    ctx.fillStyle = C.label;
+    ctx.fillText(right, x, mid);
+  };
+
   const drawPath = (
     ctx: CanvasRenderingContext2D, path: PathDefinition, selection: number[], hoverIndex: number | null, playback: Playback,
   ) => {
     const pts = path.points;
     const v = view.current;
+    hoveredTrail.current = hoveredEvent.current = null;
     if (pts.length === 0) return;
 
     // start footprint
     drawRobot(ctx, pts[0].x, pts[0].y, pts[0].theta ?? 0, false, !!path.resetPose);
 
-    // where the ghost actually drives (shows early-exit corner cutting)
-    const poses = playback.sim.poses;
-    if (poses.length > 1) {
-      ctx.strokeStyle = C.ghostTrail;
-      ctx.lineWidth = 1.75;
-      ctx.setLineDash([4, 3]);
-      ctx.beginPath();
-      poses.forEach((p, i) => {
-        const [sx, sy] = toScreen(p.x, p.y);
-        if (i === 0) ctx.moveTo(sx, sy);
-        else ctx.lineTo(sx, sy);
-      });
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
+    // where the ghost actually drives (shows early-exit corner cutting): plain and dashed under the path line,
+    // or with speed colors on, solid and colored on top of it (below)
+    const speedColors = latest.current.speedColors;
+    if (!speedColors) drawGhostTrail(ctx, playback.sim.poses);
 
     // path
     if (pts.length > 1) {
@@ -390,6 +501,8 @@ export function FieldCanvas(props: Props) {
       });
       ctx.stroke();
     }
+
+    if (speedColors) drawSpeedTrail(ctx, playback.sim.poses);
 
     // early exit rings (the last point always has to arrive, so none there)
     for (let i = 0; i < pts.length - 1; i++) {
@@ -406,7 +519,6 @@ export function FieldCanvas(props: Props) {
     }
 
     // events
-    hoveredEvent.current = null;
     const c = cursor.current;
     for (let i = 0; i < pts.length; i++) {
       const p = pts[i];
@@ -490,22 +602,42 @@ export function FieldCanvas(props: Props) {
       if (pose) drawRobot(ctx, pose.x, pose.y, pose.theta, true);
     }
 
-    // event tooltip
+  };
+
+  /** A small label above a spot on the field. */
+  const drawTip = (ctx: CanvasRenderingContext2D, text: string, sx: number, sy: number) => {
+    ctx.font = '11px Inter, system-ui, sans-serif';
+    const tw = ctx.measureText(text).width;
+    const bx = sx - tw / 2 - 7;
+    const by = sy - 30;
+    ctx.fillStyle = C.fg;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, tw + 14, 20, 5);
+    ctx.fill();
+    ctx.fillStyle = C.bg;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, sx, by + 10.5);
+  };
+
+  /** Event name under the cursor, or else the ghost's speed at the trail spot under it (not over a point). */
+  const drawTooltips = (ctx: CanvasRenderingContext2D) => {
     const he = hoveredEvent.current;
     if (he) {
-      ctx.font = '11px Inter, system-ui, sans-serif';
-      const tw = ctx.measureText(he.name).width;
-      const bx = he.sx - tw / 2 - 7;
-      const by = he.sy - 30;
-      ctx.fillStyle = C.fg;
-      ctx.beginPath();
-      ctx.roundRect(bx, by, tw + 14, 20, 5);
-      ctx.fill();
-      ctx.fillStyle = C.bg;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(he.name, he.sx, by + 10.5);
+      drawTip(ctx, he.name, he.sx, he.sy);
+      return;
     }
+    const ht = hoveredTrail.current;
+    const c = cursor.current;
+    if (!ht || !c || hitTest(c.sx, c.sy)) return;
+    ctx.fillStyle = speedColor(ht.speed / latest.current.robot.maxSpeed, theme);
+    ctx.strokeStyle = C.bg;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(ht.sx, ht.sy, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    drawTip(ctx, `${ht.speed.toFixed(2)} m/s · ${ht.t.toFixed(2)} s`, ht.sx, ht.sy);
   };
 
   const drawRef = useRef(draw);

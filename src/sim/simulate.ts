@@ -45,7 +45,7 @@ export function simulatePath(def: PathDefinition, robot: ResolvedRobot = DEFAULT
   let t = 0;
   core.start(x, y, h, 0, 0, t);
 
-  const poses: SimulatedPose[] = [{ t, x, y, theta: h }];
+  const poses: SimulatedPose[] = [{ t, x, y, theta: h, speed: 0 }];
   const pointTimes: number[] = [];
   let index = 0;
   let indexSince = 0;
@@ -58,7 +58,7 @@ export function simulatePath(def: PathDefinition, robot: ResolvedRobot = DEFAULT
     y += out.vy * SIM_DT;
     h = wrapDeg(h + (omega * SIM_DT * 180) / Math.PI);
     t += SIM_DT;
-    poses.push({ t, x, y, theta: h });
+    poses.push({ t, x, y, theta: h, speed: Math.hypot(out.vx, out.vy) });
 
     if (out.finished || core.targetIndex() !== index) {
       pointTimes.push(t);
@@ -86,5 +86,6 @@ export function poseAt(sim: SimResult, t: number): SimulatedPose | null {
     x: a.x + (b.x - a.x) * f,
     y: a.y + (b.y - a.y) * f,
     theta: a.theta + shortestAngleDeg(a.theta, b.theta) * f,
+    speed: a.speed + (b.speed - a.speed) * f,
   };
 }

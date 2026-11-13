@@ -591,6 +591,23 @@ input {
   color: var(--faint);
 }
 
+/* typing math or units: the result on the right, or a dashed border while it doesn't work out */
+.input-wrap em.result {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.input-wrap.invalid,
+.input-wrap.invalid:focus-within {
+  border-style: dashed;
+  border-color: var(--muted);
+}
+
 .text-input {
   flex: 1;
   min-width: 0;
