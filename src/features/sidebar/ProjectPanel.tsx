@@ -226,7 +226,9 @@ function RobotSection({ robot, open, onToggle }: { robot: RobotSettingsState; op
               onChange={num('headingTolerance')} />
             <NumberField label="Spin" suffix="°/s" nullable step={10} value={s.maxAngularRate} placeholder={String(d.maxAngularRate)}
               title="Fastest the robot can rotate" onChange={num('maxAngularRate')} />
-            <span />
+            <NumberField label="Lag" suffix="s" nullable step={0.01} value={s.responseLag} placeholder={String(d.responseLag)}
+              title="How long the drivetrain takes to follow a velocity command. The robot brakes this much earlier, and the ghost lags this much. 0 = instantly."
+              onChange={v => { if (v == null || v >= 0) robot.update({ responseLag: v ?? undefined }); }} />
             <NumberField label="Length" suffix="m" nullable step={0.01} value={s.robotLength} placeholder={String(d.robotLength)}
               title="Bumper to bumper (ghost only)" onChange={num('robotLength')} />
             <NumberField label="Width" suffix="m" nullable step={0.01} value={s.robotWidth} placeholder={String(d.robotWidth)}

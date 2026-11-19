@@ -68,4 +68,6 @@ export interface RobotSettings {
   maxAngularRate?: number;
   robotLength?: number;
   robotWidth?: number;
+  /** s, how long the drivetrain takes to follow a velocity command (0 = instantly) */
+  responseLag?: number;
 }

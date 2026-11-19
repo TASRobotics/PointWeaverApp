@@ -19,8 +19,9 @@ const wrapDeg = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180;
 
 /**
  * Kinematic sim of the robot following a path, one 20 ms loop per step. Same loop as
- * FollowerCoreSimTest in pointweaver-lib: ask FollowerCore what to do, then move at that velocity
- * while the heading follows a P controller like CTRE's. Assumes the robot starts at rest on point 0.
+ * FollowerCoreSimTest in pointweaver-lib: ask FollowerCore what to do, then move while the heading follows a
+ * P controller like CTRE's. The drivetrain doesn't follow commands instantly: its velocity closes the gap to
+ * the command with a time constant of robot.responseLag (0 = instantly). Assumes the robot starts at rest on point 0.
  */
 export function simulatePath(def: PathDefinition, robot: ResolvedRobot = DEFAULT_ROBOT): SimResult {
   const pts = def.points ?? [];
@@ -35,6 +36,7 @@ export function simulatePath(def: PathDefinition, robot: ResolvedRobot = DEFAULT
     positionTolerance: robot.positionTolerance,
     headingToleranceDeg: robot.headingTolerance,
     period: SIM_DT,
+    responseLag: robot.responseLag,
   });
   const rotKp = robot.headingPID[0];
   const maxRate = (robot.maxAngularRate * Math.PI) / 180;
@@ -43,6 +45,10 @@ export function simulatePath(def: PathDefinition, robot: ResolvedRobot = DEFAULT
   let y = pts[0].y;
   let h = pts[0].theta ?? 0;
   let t = 0;
+  // the drivetrain's actual velocity, lagging the command
+  let vx = 0;
+  let vy = 0;
+  const follow = robot.responseLag > 0 ? Math.min(1, SIM_DT / robot.responseLag) : 1;
   core.start(x, y, h, 0, 0, t);
 
   const poses: SimulatedPose[] = [{ t, x, y, theta: h, speed: 0 }];
@@ -51,14 +57,17 @@ export function simulatePath(def: PathDefinition, robot: ResolvedRobot = DEFAULT
   let indexSince = 0;
 
   for (;;) {
-    const out = core.update(x, y, h, t);
+    const out = core.update(x, y, h, t, vx, vy);
     const err = (shortestAngleDeg(h, out.headingDeg) * Math.PI) / 180;
-    const omega = clamp(rotKp * err, -maxRate, maxRate);
-    x += out.vx * SIM_DT;
-    y += out.vy * SIM_DT;
+    // CTRE's facing-angle request: P on the heading error plus the path's turn rate as feedforward
+    const omega = clamp(rotKp * err + (out.headingRateDegPerSec * Math.PI) / 180, -maxRate, maxRate);
+    vx += (out.vx - vx) * follow;
+    vy += (out.vy - vy) * follow;
+    x += vx * SIM_DT;
+    y += vy * SIM_DT;
     h = wrapDeg(h + (omega * SIM_DT * 180) / Math.PI);
     t += SIM_DT;
-    poses.push({ t, x, y, theta: h, speed: Math.hypot(out.vx, out.vy) });
+    poses.push({ t, x, y, theta: h, speed: Math.hypot(vx, vy) });
 
     if (out.finished || core.targetIndex() !== index) {
       pointTimes.push(t);

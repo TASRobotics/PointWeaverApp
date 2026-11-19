@@ -4,8 +4,8 @@
  */
 import type { PathDefinition, PathPoint } from '../types.ts';
 import {
-  EPS, brakingSpeed, clamp, clampSpeed, desiredHeadingDeg, isPointFinished, prefixDistances, resolveAll, segmentProgress, slew,
-  type ResolvedParams,
+  EPS, brakingSpeed, clamp, clampSpeed, desiredHeadingDeg, desiredHeadingRateDegPerSec, isPointFinished, passSpeeds, prefixDistances, resolveAll, segmentProgress,
+  slew, type ResolvedParams,
 } from './follower.ts';
 
 export interface FollowerSettings {
@@ -17,12 +17,16 @@ export interface FollowerSettings {
   positionTolerance: number;
   headingToleranceDeg: number;
   period: number;
+  /** how long the drivetrain takes to follow a new velocity command (s); braking starts that much earlier */
+  responseLag: number;
 }
 
 export interface FollowerOutput {
   vx: number;
   vy: number;
   headingDeg: number;
+  /** how fast headingDeg is turning (deg/s): feedforward for the heading controller */
+  headingRateDegPerSec: number;
   targetIndex: number;
   distance: number;
   plannedSpeed: number;
@@ -63,6 +67,8 @@ export class FollowerCore {
   private readonly pts: PathPoint[];
   private readonly prefix: number[];
   private readonly params: ResolvedParams[];
+  /** speed the robot may still have when it moves on from each point (0 = stop there) */
+  private readonly passSpeeds: number[];
   private readonly fired: boolean[][];
   private readonly pid: Pid;
   private readonly settings: FollowerSettings;
@@ -84,6 +90,8 @@ export class FollowerCore {
     this.onEvent = onEvent ?? (() => {});
     this.prefix = prefixDistances(this.pts);
     this.params = resolveAll(path);
+    this.passSpeeds = passSpeeds(this.pts, this.params, settings.maxSpeed, settings.maxAcceleration, settings.positionTolerance,
+      settings.responseLag);
     this.fired = this.pts.map(p => (p.events ?? []).map(() => false));
     this.pid = new Pid(settings.translationKp, settings.translationKi, settings.translationKd, settings.period);
   }
@@ -102,7 +110,8 @@ export class FollowerCore {
     this.finished = this.pts.length === 0;
   }
 
-  update(x: number, y: number, headingDeg: number, timeSec: number): FollowerOutput {
+  /** One loop. measuredVx/Vy: the robot's field-relative velocity, for braking (defaults to the last command). */
+  update(x: number, y: number, headingDeg: number, timeSec: number, measuredVx = this.cmdVx, measuredVy = this.cmdVy): FollowerOutput {
     if (!this.started) throw new Error('call start() before update()');
     if (this.finished) return this.stopped(headingDeg);
 
@@ -116,9 +125,23 @@ export class FollowerCore {
     const yError = target.y - y;
     const distance = Math.hypot(xError, yError);
 
+    const measuredSpeed = Math.hypot(measuredVx, measuredVy);
+
     const approach = Math.abs(this.pid.calculate(distance, 0));
-    const braking = brakingSpeed(distance, Math.hypot(this.cmdVx, this.cmdVy), 0, accel, settings.period);
-    const planned = clampSpeed(Math.min(approach, braking), prm, isLast, settings.maxSpeed);
+    const passSpeed = this.passSpeeds[this.index];
+    let planned: number;
+    if (passSpeed > EPS) {
+      // passing through: fastest speed that's down to the pass speed by the time the robot moves on
+      const moveOn = Number.isNaN(prm.earlyExitRange) ? 0 : prm.earlyExitRange;
+      planned = brakingSpeed(distance - moveOn, measuredSpeed, passSpeed, accel, settings.period, settings.responseLag);
+    } else {
+      // stopping here: slower of the final-approach PID and the fastest speed that can still stop at the point,
+      // leaving room to cancel any sideways velocity first (the straight-line braking curve can't see it)
+      const sideways = distance > EPS ? Math.abs(xError * measuredVy - yError * measuredVx) / distance : 0;
+      const room = distance - (sideways * sideways) / (2 * accel);
+      planned = Math.min(approach, brakingSpeed(room, measuredSpeed, 0, accel, settings.period, settings.responseLag));
+    }
+    planned = clampSpeed(planned, prm, isLast, settings.maxSpeed);
     let tx = 0;
     let ty = 0;
     if (distance > EPS) {
@@ -128,12 +151,14 @@ export class FollowerCore {
     [this.cmdVx, this.cmdVy] = slew(this.cmdVx, this.cmdVy, tx, ty, accel * settings.period);
 
     const wantDeg = desiredHeadingDeg(pts, this.prefix, params, this.index, x, y, this.startX, this.startY, this.startHeadingDeg);
+    const wantRate = desiredHeadingRateDegPerSec(pts, this.prefix, params, this.index, x, y, this.cmdVx, this.cmdVy,
+      this.startX, this.startY, this.startHeadingDeg);
 
     if (this.index > 0) this.fireEvents(this.index - 1, segmentProgress(pts[this.index - 1], target, x, y));
 
     const done = isPointFinished(target, prm, isLast, x, y, headingDeg, timeSec - this.pointStartTime,
       settings.positionTolerance, settings.headingToleranceDeg);
-    if (!done) return this.out(this.cmdVx, this.cmdVy, wantDeg, this.index, distance, planned, false);
+    if (!done) return this.out(this.cmdVx, this.cmdVy, wantDeg, wantRate, this.index, distance, planned, false);
 
     if (this.index > 0) this.fireEvents(this.index - 1, 1);
     if (isLast) {
@@ -141,12 +166,12 @@ export class FollowerCore {
       this.finished = true;
       this.cmdVx = 0;
       this.cmdVy = 0;
-      return this.out(0, 0, wantDeg, this.index, distance, 0, true);
+      return this.out(0, 0, wantDeg, 0, this.index, distance, 0, true);
     }
     this.index++;
     this.pointStartTime = timeSec;
     this.pid.reset();
-    return this.out(this.cmdVx, this.cmdVy, wantDeg, this.index - 1, distance, planned, false);
+    return this.out(this.cmdVx, this.cmdVy, wantDeg, wantRate, this.index - 1, distance, planned, false);
   }
 
   isFinished() {
@@ -159,11 +184,14 @@ export class FollowerCore {
 
   private stopped(headingDeg: number): FollowerOutput {
     const last = Math.max(0, Math.min(this.index, this.pts.length - 1));
-    return this.out(0, 0, headingDeg, last, 0, 0, true);
+    return this.out(0, 0, headingDeg, 0, last, 0, 0, true);
   }
 
-  private out(vx: number, vy: number, headingDeg: number, targetIndex: number, distance: number, plannedSpeed: number, finished: boolean): FollowerOutput {
-    return { vx, vy, headingDeg, targetIndex, distance, plannedSpeed, finished };
+  private out(
+    vx: number, vy: number, headingDeg: number, headingRateDegPerSec: number, targetIndex: number, distance: number,
+    plannedSpeed: number, finished: boolean,
+  ): FollowerOutput {
+    return { vx, vy, headingDeg, headingRateDegPerSec, targetIndex, distance, plannedSpeed, finished };
   }
 
   private fireEvents(pointIdx: number, progress: number) {

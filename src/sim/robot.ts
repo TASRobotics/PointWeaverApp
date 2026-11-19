@@ -11,6 +11,7 @@ export interface ResolvedRobot {
   maxAngularRate: number; // deg/s
   robotLength: number; // m
   robotWidth: number; // m
+  responseLag: number; // s, how long the drivetrain takes to follow a velocity command
 }
 
 export const DEFAULT_ROBOT: ResolvedRobot = {
@@ -23,6 +24,7 @@ export const DEFAULT_ROBOT: ResolvedRobot = {
   maxAngularRate: 720,
   robotLength: 0.85,
   robotWidth: 0.85,
+  responseLag: 0.08, // about what a CTRE swerve measured, command to motion
 };
 
 const pid = (v: number[] | undefined, d: [number, number, number]): [number, number, number] =>
@@ -40,5 +42,6 @@ export function resolveRobot(s: RobotSettings | null | undefined): ResolvedRobot
     maxAngularRate: s?.maxAngularRate ?? d.maxAngularRate,
     robotLength: s?.robotLength ?? d.robotLength,
     robotWidth: s?.robotWidth ?? d.robotWidth,
+    responseLag: s?.responseLag ?? d.responseLag,
   };
 }
